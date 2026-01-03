@@ -2,11 +2,11 @@ package sqlengine
 
 import (
 	"errors"
-	"text/template/parse"
 
 	"github.com/geoffreyhinton/go_mysql_server/sql"
 	"github.com/geoffreyhinton/go_mysql_server/sql/analyzer"
 	"github.com/geoffreyhinton/go_mysql_server/sql/expression"
+	"github.com/geoffreyhinton/go_mysql_server/sql/parse"
 )
 
 var (
