@@ -9,6 +9,7 @@ import (
 	"github.com/geoffreyhinton/go_mysql_server/sql"
 	"github.com/geoffreyhinton/go_mysql_server/sql/expression"
 	"github.com/geoffreyhinton/go_mysql_server/sql/plan"
+	"gopkg.in/src-d/go-vitess.v0/vt/sqlparser"
 )
 
 func errUnsupported(n sqlparser.SQLNode) error {

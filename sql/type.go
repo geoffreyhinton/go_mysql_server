@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/spf13/cast"
+	"gopkg.in/src-d/go-vitess.v0/sqltypes"
+	"gopkg.in/src-d/go-vitess.v0/vt/proto/query"
 )
 
 // Schema is the definition of a table.

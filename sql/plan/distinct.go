@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/geoffreyhinton/go_mysql_server/sql"
+	"github.com/mitchellh/hashstructure"
 )
 
 // Distinct is a node that ensures all rows that come from it are unique.
