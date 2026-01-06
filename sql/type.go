@@ -1,442 +1,529 @@
 package sql
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"reflect"
+	"io"
 	"strconv"
-	"strings"
 	"time"
 
-	"github.com/spf13/cast"
+	errors "gopkg.in/src-d/go-errors.v1"
 	"gopkg.in/src-d/go-vitess.v0/sqltypes"
 	"gopkg.in/src-d/go-vitess.v0/vt/proto/query"
+	"gopkg.in/src-d/go-vitess.v0/vt/sqlparser"
 )
-
-// Schema is the definition of a table.
-type Schema []*Column
-
-// CheckRow checks the row conforms to the schema.
-func (s Schema) CheckRow(row Row) error {
-	expected := len(s)
-	got := len(row)
-	if expected != got {
-		return fmt.Errorf("expected %d values, got %d", expected, got)
-	}
-
-	for idx, f := range s {
-		v := row[idx]
-		if f.Check(v) {
-			continue
-		}
-
-		typ := reflect.TypeOf(v).String()
-		return fmt.Errorf("value at %d has unexpected type: %s",
-			idx, typ)
-
-	}
-
-	return nil
-}
-
-// Column is the definition of a table column.
-// As SQL:2016 puts it:
-//
-//	A column is a named component of a table. It has a data type, a default,
-//	and a nullability characteristic.
-type Column struct {
-	// Name is the name of the column.
-	Name string
-	// Type is the data type of the column.
-	Type Type
-	// Default contains the default value of the column or nil if it is NULL.
-	Default interface{}
-	// Nullable is true if the column can contain NULL values, or false
-	// otherwise.
-	Nullable bool
-}
-
-// Check ensures the value is correct for this column.
-func (c *Column) Check(v interface{}) bool {
-	if v == nil {
-		return c.Nullable
-	}
-
-	_, err := c.Type.Convert(v)
-	return err == nil
-}
-
-// Type represent a SQL type.
-type Type interface {
-	// Type returns the query.Type for the given Type.
-	Type() query.Type
-	// Covert a value of a compatible type to a most accurate type.
-	Convert(interface{}) (interface{}, error)
-	// Compare returns an integer comparing two values.
-	// The result will be 0 if a==b, -1 if a < b, and +1 if a > b.
-	Compare(interface{}, interface{}) int
-	// SQL returns the sqltypes.Value for the given value.
-	SQL(interface{}) sqltypes.Value
-}
 
 var (
-	// Null represents the null type.
-	Null nullT
+	// ErrNotTuple is returned when the value is not a tuple.
+	ErrNotTuple = errors.NewKind("value of type %T is not a tuple")
 
-	// Numeric types
+	// ErrInvalidColumnNumber is returned when a tuple has an invalid number of
+	// arguments.
+	ErrInvalidColumnNumber = errors.NewKind("tuple should contain %d column(s), but has %d")
 
-	// Int32 is an integer of 32 bits.
-	Int32 = numberT{t: sqltypes.Int32}
-	// Int64 is an integer of 64 bytes.
-	Int64 = numberT{t: sqltypes.Int64}
-	// Uint32 is an unsigned integer of 32 bytes.
-	Uint32 = numberT{t: sqltypes.Uint32}
-	// Uint64 is an unsigned integer of 64 bytes.
-	Uint64 = numberT{t: sqltypes.Uint64}
-	// Float32 is a floating point number of 32 bytes.
-	Float32 = numberT{t: sqltypes.Float32}
-	// Float64 is a floating point number of 64 bytes.
-	Float64 = numberT{t: sqltypes.Float64}
+	ErrInvalidBaseType = errors.NewKind("%v is not a valid %v base type")
 
-	// Timestamp is an UNIX timestamp.
-	Timestamp timestampT
-	// Date is a date with day, month and year.
-	Date dateT
-	// Text is a string type.
-	Text textT
-	// Boolean is a boolean type.
-	Boolean booleanT
-	// JSON is a type that holds any valid JSON object.
-	JSON jsonT
-	// Blob is a type that holds a chunk of binary data.
-	Blob blobT
+	// ErrNotArray is returned when the value is not an array.
+	ErrNotArray = errors.NewKind("value of type %T is not an array")
+
+	// ErrConvertToSQL is returned when Convert failed.
+	// It makes an error less verbose comparing to what spf13/cast returns.
+	ErrConvertToSQL = errors.NewKind("incompatible conversion to SQL type: %s")
 )
 
-type nullT struct{}
-
-// Type implements Type interface.
-func (t nullT) Type() query.Type {
-	return sqltypes.Null
+// Type represents a SQL type.
+type Type interface {
+	// Compare returns an integer comparing two values.
+	// The result will be 0 if a==b, -1 if a < b, and +1 if a > b.
+	Compare(interface{}, interface{}) (int, error)
+	// Convert a value of a compatible type to a most accurate type.
+	Convert(interface{}) (interface{}, error)
+	// MustConvert converts a value of a compatible type to a most accurate type, causing a panic on failure.
+	MustConvert(interface{}) interface{}
+	// Promote will promote the current type to the largest representing type of the same kind, such as Int8 to Int64.
+	Promote() Type
+	// SQL returns the sqltypes.Value for the given value.
+	SQL(interface{}) (sqltypes.Value, error)
+	// Type returns the query.Type for the given Type.
+	Type() query.Type
+	// Zero returns the golang zero value for this type
+	Zero() interface{}
+	fmt.Stringer
 }
 
-// SQL implements Type interface.
-func (t nullT) SQL(interface{}) sqltypes.Value {
-	return sqltypes.NULL
-}
-
-// Convert implements Type interface.
-func (t nullT) Convert(v interface{}) (interface{}, error) {
-	if v != nil {
-		return nil, fmt.Errorf("value not nil: %#v", v)
+// AreComparable returns whether the given types are either the same or similar enough that values can meaningfully be
+// compared across all permutations. Int8 and Int64 are comparable types, where as VarChar and Int64 are not. In the case
+// of the latter example, not all possible values of a VarChar are comparable to an Int64, while this is true for the
+// former example.
+func AreComparable(types ...Type) bool {
+	if len(types) <= 1 {
+		return true
 	}
-
-	return nil, nil
+	typeNums := make([]int, len(types))
+	for i, typ := range types {
+		switch typ.Type() {
+		case sqltypes.Int8, sqltypes.Uint8, sqltypes.Int16,
+			sqltypes.Uint16, sqltypes.Int24, sqltypes.Uint24,
+			sqltypes.Int32, sqltypes.Uint32, sqltypes.Int64,
+			sqltypes.Uint64, sqltypes.Float32, sqltypes.Float64,
+			sqltypes.Decimal, sqltypes.Bit, sqltypes.Year:
+			typeNums[i] = 1
+		case sqltypes.Timestamp, sqltypes.Date, sqltypes.Datetime:
+			typeNums[i] = 2
+		case sqltypes.Time:
+			typeNums[i] = 3
+		case sqltypes.Text, sqltypes.Blob, sqltypes.VarChar,
+			sqltypes.VarBinary, sqltypes.Char, sqltypes.Binary:
+			typeNums[i] = 4
+		case sqltypes.Enum:
+			typeNums[i] = 5
+		case sqltypes.Set:
+			typeNums[i] = 6
+		case sqltypes.Geometry:
+			typeNums[i] = 7
+		case sqltypes.TypeJSON:
+			typeNums[i] = 8
+		default:
+			return false
+		}
+	}
+	for i := 1; i < len(typeNums); i++ {
+		if typeNums[i-1] != typeNums[i] {
+			return false
+		}
+	}
+	return true
 }
 
-// Compare implements Type interface. Note that while this returns 0 (equals)
-// for ordering purposes, in SQL NULL != NULL.
-func (t nullT) Compare(a interface{}, b interface{}) int {
-	return 0
-}
-
-type numberT struct {
-	t query.Type
-}
-
-// Type implements Type interface.
-func (t numberT) Type() query.Type {
-	return t.t
-}
-
-// SQL implements Type interface.
-func (t numberT) SQL(v interface{}) sqltypes.Value {
-	return sqltypes.MakeTrusted(t.t, strconv.AppendInt(nil, cast.ToInt64(v), 10))
-}
-
-// Convert implements Type interface.
-func (t numberT) Convert(v interface{}) (interface{}, error) {
-	switch t.t {
-	case sqltypes.Int32:
-		return cast.ToInt32E(v)
-	case sqltypes.Int64:
-		return cast.ToInt64E(v)
-	case sqltypes.Uint32:
-		return cast.ToUint32E(v)
-	case sqltypes.Uint64:
-		return cast.ToUint64E(v)
-	case sqltypes.Float32:
-		return cast.ToFloat32E(v)
-	case sqltypes.Float64:
-		return cast.ToFloat64E(v)
+// ColumnTypeToType gets the column type using the column definition.
+func ColumnTypeToType(ct *sqlparser.ColumnType) (Type, error) {
+	switch ct.Type {
+	case "boolean", "bool":
+		return Int8, nil
+	case "tinyint":
+		if ct.Unsigned {
+			return Uint8, nil
+		}
+		return Int8, nil
+	case "smallint":
+		if ct.Unsigned {
+			return Uint16, nil
+		}
+		return Int16, nil
+	case "mediumint":
+		if ct.Unsigned {
+			return Uint24, nil
+		}
+		return Int24, nil
+	case "int", "integer":
+		if ct.Unsigned {
+			return Uint32, nil
+		}
+		return Int32, nil
+	case "bigint":
+		if ct.Unsigned {
+			return Uint64, nil
+		}
+		return Int64, nil
+	case "float":
+		return Float32, nil
+	case "double", "real":
+		return Float64, nil
+	case "decimal", "fixed", "dec", "numeric":
+		precision := int64(0)
+		scale := int64(0)
+		if ct.Length != nil {
+			var err error
+			precision, err = strconv.ParseInt(string(ct.Length.Val), 10, 8)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if ct.Scale != nil {
+			var err error
+			scale, err = strconv.ParseInt(string(ct.Scale.Val), 10, 8)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return CreateDecimalType(uint8(precision), uint8(scale))
+	case "bit":
+		length := int64(1)
+		if ct.Length != nil {
+			var err error
+			length, err = strconv.ParseInt(string(ct.Length.Val), 10, 8)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return CreateBitType(uint8(length))
+	case "tinyblob":
+		return TinyBlob, nil
+	case "blob":
+		if ct.Length == nil {
+			return Blob, nil
+		}
+		length, err := strconv.ParseInt(string(ct.Length.Val), 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		return CreateBinary(sqltypes.Blob, length)
+	case "mediumblob":
+		return MediumBlob, nil
+	case "longblob":
+		return LongBlob, nil
+	case "tinytext":
+		collation, err := ParseCollation(&ct.Charset, &ct.Collate, false)
+		if err != nil {
+			return nil, err
+		}
+		return CreateString(sqltypes.Text, tinyTextBlobMax/collation.CharacterSet().MaxLength(), collation)
+	case "text":
+		collation, err := ParseCollation(&ct.Charset, &ct.Collate, false)
+		if err != nil {
+			return nil, err
+		}
+		if ct.Length == nil {
+			return CreateString(sqltypes.Text, textBlobMax/collation.CharacterSet().MaxLength(), collation)
+		}
+		length, err := strconv.ParseInt(string(ct.Length.Val), 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		return CreateString(sqltypes.Text, length, collation)
+	case "mediumtext", "long":
+		collation, err := ParseCollation(&ct.Charset, &ct.Collate, false)
+		if err != nil {
+			return nil, err
+		}
+		return CreateString(sqltypes.Text, mediumTextBlobMax/collation.CharacterSet().MaxLength(), collation)
+	case "longtext":
+		collation, err := ParseCollation(&ct.Charset, &ct.Collate, false)
+		if err != nil {
+			return nil, err
+		}
+		return CreateString(sqltypes.Text, longTextBlobMax/collation.CharacterSet().MaxLength(), collation)
+	case "char", "character":
+		collation, err := ParseCollation(&ct.Charset, &ct.Collate, false)
+		if err != nil {
+			return nil, err
+		}
+		length := int64(1)
+		if ct.Length != nil {
+			var err error
+			length, err = strconv.ParseInt(string(ct.Length.Val), 10, 64)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return CreateString(sqltypes.Char, length, collation)
+	case "varchar":
+		collation, err := ParseCollation(&ct.Charset, &ct.Collate, false)
+		if err != nil {
+			return nil, err
+		}
+		if ct.Length == nil {
+			return nil, fmt.Errorf("VARCHAR requires a length")
+		}
+		length, err := strconv.ParseInt(string(ct.Length.Val), 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		return CreateString(sqltypes.VarChar, length, collation)
+	case "binary":
+		length := int64(1)
+		if ct.Length != nil {
+			var err error
+			length, err = strconv.ParseInt(string(ct.Length.Val), 10, 64)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return CreateString(sqltypes.Binary, length, Collation_binary)
+	case "varbinary":
+		if ct.Length == nil {
+			return nil, fmt.Errorf("VARBINARY requires a length")
+		}
+		length, err := strconv.ParseInt(string(ct.Length.Val), 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		return CreateString(sqltypes.VarBinary, length, Collation_binary)
+	case "year":
+		return Year, nil
+	case "date":
+		return Date, nil
+	case "time":
+		return Time, nil
+	case "timestamp":
+		return Timestamp, nil
+	case "datetime":
+		return Datetime, nil
+	case "enum":
+		collation, err := ParseCollation(&ct.Charset, &ct.Collate, false)
+		if err != nil {
+			return nil, err
+		}
+		return CreateEnumType(ct.EnumValues, collation)
+	case "set":
+		collation, err := ParseCollation(&ct.Charset, &ct.Collate, false)
+		if err != nil {
+			return nil, err
+		}
+		return CreateSetType(ct.EnumValues, collation)
+	case "json":
+		return JSON, nil
+	case "geometry":
+	case "geometrycollection":
+	case "linestring":
+	case "multilinestring":
+	case "point":
+	case "multipoint":
+	case "polygon":
+	case "multipolygon":
 	default:
-		return nil, ErrInvalidType.New(t.t)
+		return nil, fmt.Errorf("unknown type: %v", ct.Type)
 	}
-
+	return nil, fmt.Errorf("type not yet implemented: %v", ct.Type)
 }
 
-// Compare implements Type interface.
-func (t numberT) Compare(a interface{}, b interface{}) int {
-	if a == b {
-		return 0
-	}
-
-	switch t.t {
-	case sqltypes.Int32:
-		if a.(int32) < b.(int32) {
-			return -1
+func ConvertToBool(v interface{}) (bool, error) {
+	switch b := v.(type) {
+	case bool:
+		if b {
+			return true, nil
 		}
-	case sqltypes.Int64:
-		if a.(int64) < b.(int64) {
-			return -1
+		return false, nil
+	case int:
+		return ConvertToBool(int64(b))
+	case int64:
+		if b == 0 {
+			return false, nil
 		}
-	case sqltypes.Uint32:
-		if a.(uint32) < b.(uint32) {
-			return -1
+		return true, nil
+	case int32:
+		return ConvertToBool(int64(b))
+	case int16:
+		return ConvertToBool(int64(b))
+	case int8:
+		return ConvertToBool(int64(b))
+	case uint:
+		return ConvertToBool(int64(b))
+	case uint64:
+		if b == 0 {
+			return false, nil
 		}
-	case sqltypes.Uint64:
-		if a.(uint64) < b.(uint64) {
-			return -1
+		return true, nil
+	case uint32:
+		return ConvertToBool(uint64(b))
+	case uint16:
+		return ConvertToBool(uint64(b))
+	case uint8:
+		return ConvertToBool(uint64(b))
+	case time.Duration:
+		if b == 0 {
+			return false, nil
 		}
-	case sqltypes.Float32:
-		if a.(float32) < b.(float32) {
-			return -1
-		}
-	case sqltypes.Float64:
-		if a.(float64) < b.(float64) {
-			return -1
-		}
-	default:
-		if cast.ToInt64(a) < cast.ToInt64(b) {
-			return -1
-		}
-	}
-
-	return +1
-}
-
-type timestampT struct{}
-
-// Type implements Type interface.
-func (t timestampT) Type() query.Type {
-	return sqltypes.Timestamp
-}
-
-// TimestampLayout is the formatting string with the layout of the timestamp
-// using the format of Go "time" package.
-const TimestampLayout = "2006-01-02 15:04:05"
-
-// SQL implements Type interface.
-func (t timestampT) SQL(v interface{}) sqltypes.Value {
-	time := MustConvert(t, v).(time.Time)
-	return sqltypes.MakeTrusted(
-		sqltypes.Timestamp,
-		[]byte(time.Format(TimestampLayout)),
-	)
-}
-
-// Convert implements Type interface.
-func (t timestampT) Convert(v interface{}) (interface{}, error) {
-	switch value := v.(type) {
+		return true, nil
 	case time.Time:
-		return value, nil
+		if b.UnixNano() == 0 {
+			return false, nil
+		}
+		return true, nil
+	case float32:
+		return ConvertToBool(float64(b))
+	case float64:
+		if b == 0 {
+			return false, nil
+		}
+		return true, nil
 	case string:
-		t, err := time.Parse(TimestampLayout, value)
+		bFloat, err := strconv.ParseFloat(b, 64)
 		if err != nil {
-			return nil, fmt.Errorf("value %q can't be converted to time.Time", v)
+			// In MySQL, if the string does not represent a float then it's false
+			return false, nil
 		}
-		return t, nil
+		return bFloat != 0, nil
+	case nil:
+		return false, fmt.Errorf("unable to cast nil to bool")
 	default:
-		ts, err := Int64.Convert(v)
-		if err != nil {
-			return nil, ErrInvalidType.New(reflect.TypeOf(v))
-		}
-
-		return time.Unix(ts.(int64), 0), nil
+		return false, fmt.Errorf("unable to cast %#v of type %T to bool", v, v)
 	}
 }
 
-// Compare implements Type interface.
-func (t timestampT) Compare(a interface{}, b interface{}) int {
-	av := a.(time.Time)
-	bv := b.(time.Time)
-	if av.Before(bv) {
-		return -1
-	} else if av.After(bv) {
+// IsArray returns whether the given type is an array.
+func IsArray(t Type) bool {
+	_, ok := t.(arrayType)
+	return ok
+}
+
+// IsBlob checks if t is BINARY, VARBINARY, or BLOB
+func IsBlob(t Type) bool {
+	switch t.Type() {
+	case sqltypes.Binary, sqltypes.VarBinary, sqltypes.Blob:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsFloat checks if t is float type.
+func IsFloat(t Type) bool {
+	return t == Float32 || t == Float64
+}
+
+// IsInteger checks if t is an integer type.
+func IsInteger(t Type) bool {
+	return IsSigned(t) || IsUnsigned(t)
+}
+
+// IsNull returns true if expression is nil or is Null Type, otherwise false.
+func IsNull(ex Expression) bool {
+	return ex == nil || ex.Type() == Null
+}
+
+// IsNumber checks if t is a number type
+func IsNumber(t Type) bool {
+	_, ok := t.(numberTypeImpl)
+	return ok
+}
+
+// IsSigned checks if t is a signed type.
+func IsSigned(t Type) bool {
+	return t == Int8 || t == Int16 || t == Int32 || t == Int64
+}
+
+// IsText checks if t is a text type.
+func IsText(t Type) bool {
+	_, ok := t.(stringType)
+	return ok || t == JSON
+}
+
+// IsTextOnly checks if t is CHAR, VARCHAR, or one of the TEXTs.
+func IsTextOnly(t Type) bool {
+	switch t.Type() {
+	case sqltypes.Char, sqltypes.VarChar, sqltypes.Text:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsTime checks if t is a timestamp, date or datetime
+func IsTime(t Type) bool {
+	_, ok := t.(datetimeType)
+	return ok
+}
+
+// IsTuple checks if t is a tuple type.
+// Note that tupleType instances with just 1 value are not considered
+// as a tuple, but a parenthesized value.
+func IsTuple(t Type) bool {
+	v, ok := t.(tupleType)
+	return ok && len(v) > 1
+}
+
+// IsUnsigned checks if t is an unsigned type.
+func IsUnsigned(t Type) bool {
+	return t == Uint8 || t == Uint16 || t == Uint32 || t == Uint64
+}
+
+// NumColumns returns the number of columns in a type. This is one for all
+// types, except tuples.
+func NumColumns(t Type) int {
+	v, ok := t.(tupleType)
+	if !ok {
 		return 1
 	}
-	return 0
+	return len(v)
 }
 
-type dateT struct{}
+// UnderlyingType returns the underlying type of an array if the type is an
+// array, or the type itself in any other case.
+func UnderlyingType(t Type) Type {
+	a, ok := t.(arrayType)
+	if !ok {
+		return t
+	}
 
-// DateLayout is the layout of the MySQL date format in the representation
-// Go understands.
-const DateLayout = "2006-01-02"
-
-func truncateDate(t time.Time) time.Time {
-	return t.Truncate(24 * time.Hour)
+	return a.underlying
 }
 
-func (t dateT) Type() query.Type {
-	return sqltypes.Date
-}
-
-func (t dateT) SQL(v interface{}) sqltypes.Value {
-	time := MustConvert(t, v).(time.Time)
-	return sqltypes.MakeTrusted(
-		sqltypes.Timestamp,
-		[]byte(time.Format(DateLayout)),
-	)
-}
-
-func (t dateT) Convert(v interface{}) (interface{}, error) {
-	switch value := v.(type) {
-	case time.Time:
-		return truncateDate(value), nil
-	case string:
-		t, err := time.Parse(DateLayout, value)
+func convertForJSON(t Type, v interface{}) (interface{}, error) {
+	switch t := t.(type) {
+	case jsonType:
+		val, err := t.Convert(v)
 		if err != nil {
-			return nil, fmt.Errorf("value %q can't be converted to time.Time", v)
-		}
-		return truncateDate(t), nil
-	default:
-		ts, err := Int64.Convert(v)
-		if err != nil {
-			return nil, ErrInvalidType.New(reflect.TypeOf(v))
+			return nil, err
 		}
 
-		return truncateDate(time.Unix(ts.(int64), 0)), nil
-	}
-}
+		var doc interface{}
+		err = json.Unmarshal(val.([]byte), &doc)
+		if err != nil {
+			return nil, err
+		}
 
-func (t dateT) Compare(a, b interface{}) int {
-	av := truncateDate(a.(time.Time))
-	bv := truncateDate(b.(time.Time))
-	if av.Before(bv) {
-		return -1
-	} else if av.After(bv) {
-		return 1
-	}
-	return 0
-}
-
-type textT struct{}
-
-// Type implements Type interface.
-func (t textT) Type() query.Type {
-	return sqltypes.Text
-}
-
-// SQL implements Type interface.
-func (t textT) SQL(v interface{}) sqltypes.Value {
-	return sqltypes.MakeTrusted(sqltypes.Text, []byte(MustConvert(t, v).(string)))
-}
-
-// Convert implements Type interface.
-func (t textT) Convert(v interface{}) (interface{}, error) {
-	return cast.ToStringE(v)
-}
-
-// Compare implements Type interface.
-func (t textT) Compare(a interface{}, b interface{}) int {
-	return strings.Compare(a.(string), b.(string))
-}
-
-type booleanT struct{}
-
-// Type implements Type interface.
-func (t booleanT) Type() query.Type {
-	return sqltypes.Bit
-}
-
-// SQL implements Type interface.
-func (t booleanT) SQL(v interface{}) sqltypes.Value {
-	b := []byte{'0'}
-	if cast.ToBool(v) {
-		b[0] = '1'
-	}
-
-	return sqltypes.MakeTrusted(sqltypes.Bit, b)
-}
-
-// Convert implements Type interface.
-func (t booleanT) Convert(v interface{}) (interface{}, error) {
-	return cast.ToBoolE(v)
-}
-
-// Compare implements Type interface.
-func (t booleanT) Compare(a interface{}, b interface{}) int {
-	if a == b {
-		return 0
-	}
-
-	if a.(bool) == false {
-		return -1
-	}
-
-	return +1
-}
-
-type blobT struct{}
-
-// Type implements Type interface.
-func (t blobT) Type() query.Type {
-	return sqltypes.Blob
-}
-
-// SQL implements Type interface.
-func (t blobT) SQL(v interface{}) sqltypes.Value {
-	return sqltypes.MakeTrusted(sqltypes.Blob, MustConvert(t, v).([]byte))
-}
-
-// Convert implements Type interface.
-func (t blobT) Convert(v interface{}) (interface{}, error) {
-	switch value := v.(type) {
-	case []byte:
-		return value, nil
-	case string:
-		return []byte(value), nil
-	case fmt.Stringer:
-		return []byte(value.String()), nil
+		return doc, nil
+	case arrayType:
+		return convertArrayForJSON(t, v)
 	default:
-		return nil, ErrInvalidType.New(reflect.TypeOf(v))
+		return t.Convert(v)
 	}
 }
 
-// Compare implements Type interface.
-func (t blobT) Compare(a interface{}, b interface{}) int {
-	return bytes.Compare(a.([]byte), b.([]byte))
-}
+func convertArrayForJSON(t arrayType, v interface{}) (interface{}, error) {
+	switch v := v.(type) {
+	case []interface{}:
+		var result = make([]interface{}, len(v))
+		for i, v := range v {
+			var err error
+			result[i], err = convertForJSON(t.underlying, v)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return result, nil
+	case Generator:
+		var values []interface{}
+		for {
+			val, err := v.Next()
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				return nil, err
+			}
 
-type jsonT struct{}
+			val, err = convertForJSON(t.underlying, val)
+			if err != nil {
+				return nil, err
+			}
 
-// Type implements Type interface.
-func (t jsonT) Type() query.Type {
-	return sqltypes.TypeJSON
-}
+			values = append(values, val)
+		}
 
-// SQL implements Type interface.
-func (t jsonT) SQL(v interface{}) sqltypes.Value {
-	return sqltypes.MakeTrusted(sqltypes.TypeJSON, MustConvert(t, v).([]byte))
-}
+		if err := v.Close(); err != nil {
+			return nil, err
+		}
 
-// Convert implements Type interface.
-func (t jsonT) Convert(v interface{}) (interface{}, error) {
-	return json.Marshal(v)
-}
-
-// Compare implements Type interface.
-func (t jsonT) Compare(a interface{}, b interface{}) int {
-	return bytes.Compare(a.([]byte), b.([]byte))
-}
-
-// MustConvert calls the Convert function from a given Type, it err panics.
-func MustConvert(t Type, v interface{}) interface{} {
-	c, err := t.Convert(v)
-	if err != nil {
-		panic(err)
+		return values, nil
+	default:
+		return nil, ErrNotArray.New(v)
 	}
+}
 
-	return c
+// compareNulls compares two values, and returns true if either is null.
+// The returned integer represents the ordering, with a rule that states nulls
+// as being ordered before non-nulls.
+func compareNulls(a interface{}, b interface{}) (bool, int) {
+	aIsNull := a == nil
+	bIsNull := b == nil
+	if aIsNull && bIsNull {
+		return true, 0
+	} else if aIsNull && !bIsNull {
+		return true, -1
+	} else if !aIsNull && bIsNull {
+		return true, 1
+	}
+	return false, 0
 }
