@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/geoffreyhinton/go_mysql_server/sql"
-	"gopkg.in/src-d/go-errors.v1"
+	errors "gopkg.in/src-d/go-errors.v1"
 )
 
 var errCannotSetField = errors.NewKind("Expected GetField expression on left but got %T")

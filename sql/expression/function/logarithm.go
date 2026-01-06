@@ -7,7 +7,7 @@ import (
 
 	"github.com/geoffreyhinton/go_mysql_server/sql"
 	"github.com/geoffreyhinton/go_mysql_server/sql/expression"
-	"gopkg.in/src-d/go-errors.v1"
+	errors "gopkg.in/src-d/go-errors.v1"
 )
 
 // ErrInvalidArgumentForLogarithm is returned when an invalid argument value is passed to a

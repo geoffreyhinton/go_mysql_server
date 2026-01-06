@@ -6,7 +6,7 @@ import (
 	"runtime"
 
 	lru "github.com/hashicorp/golang-lru"
-	errors "gopkg.in/src-d/go-errors.v1"
+	errors errors "gopkg.in/src-d/go-errors.v1"
 )
 
 var table = crc64.MakeTable(crc64.ISO)

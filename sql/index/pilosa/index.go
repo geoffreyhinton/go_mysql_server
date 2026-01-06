@@ -10,7 +10,7 @@ import (
 	"github.com/geoffreyhinton/go_mysql_server/sql"
 	"github.com/geoffreyhinton/go_mysql_server/sql/index"
 	"github.com/pilosa/pilosa"
-	errors "gopkg.in/src-d/go-errors.v1"
+	errors errors "gopkg.in/src-d/go-errors.v1"
 )
 
 // concurrentPilosaIndex is a wrapper of pilosa.Index that can be opened and closed

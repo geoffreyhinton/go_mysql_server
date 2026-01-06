@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"time"
 
-	errors "gopkg.in/src-d/go-errors.v1"
+	errors errors "gopkg.in/src-d/go-errors.v1"
 	"vitess.io/vitess/go/vt/sqlparser"
 
 	"github.com/geoffreyhinton/go_mysql_server/sql"

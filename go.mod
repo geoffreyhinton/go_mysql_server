@@ -3,23 +3,42 @@ module github.com/geoffreyhinton/go_mysql_server
 go 1.25.3
 
 require (
-	github.com/hashicorp/go-multierror v1.1.1
+	github.com/go-kit/kit v0.13.0
+	github.com/golang/glog v1.2.5
+	github.com/hashicorp/golang-lru v1.0.2
 	github.com/mitchellh/hashstructure v1.1.0
+	github.com/oliveagle/jsonpath v0.0.0-20180606110733-2e52cf6e6852
+	github.com/opentracing/opentracing-go v1.2.0
+	github.com/pilosa/pilosa v1.4.1
+	github.com/shopspring/decimal v1.4.0
+	github.com/sirupsen/logrus v1.9.3
 	github.com/spf13/cast v1.10.0
-	gopkg.in/src-d/go-errors.v0 v0.1.0
-	gopkg.in/src-d/go-vitess.v0 v0.1.0
+	github.com/src-d/go-oniguruma v1.1.0
+	github.com/stretchr/testify v1.11.1
+	go.etcd.io/bbolt v1.4.3
+	gopkg.in/src-d/go-errors.v1 v1.0.0
+	gopkg.in/yaml.v2 v2.4.0
+	vitess.io/vitess v0.23.0
 )
 
 require (
+	github.com/AdaLogics/go-fuzz-headers v0.0.0-20240806141605-e8a1dd7889d6 // indirect
+	github.com/cespare/xxhash v1.1.0 // indirect
+	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
+	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
-	github.com/hashicorp/errwrap v1.0.0 // indirect
-	github.com/opentracing/opentracing-go v1.2.0 // indirect
+	github.com/klauspost/compress v1.18.0 // indirect
+	github.com/pires/go-proxyproto v0.8.1 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	github.com/sirupsen/logrus v1.9.3 // indirect
-	github.com/stretchr/testify v1.11.1 // indirect
+	github.com/planetscale/vtprotobuf v0.6.1-0.20250313105119-ba97887b0a25 // indirect
+	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
+	github.com/satori/go.uuid v1.2.0 // indirect
+	github.com/spf13/pflag v1.0.10 // indirect
 	golang.org/x/net v0.48.0 // indirect
+	golang.org/x/sync v0.18.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251029180050-ab9386a59fda // indirect
 	google.golang.org/grpc v1.78.0 // indirect
 	google.golang.org/protobuf v1.36.10 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

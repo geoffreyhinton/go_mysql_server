@@ -4,7 +4,7 @@ import (
 	"strings"
 	"sync"
 
-	"gopkg.in/src-d/go-errors.v1"
+	errors "gopkg.in/src-d/go-errors.v1"
 )
 
 var (

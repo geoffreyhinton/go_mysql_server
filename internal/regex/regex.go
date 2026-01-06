@@ -2,7 +2,7 @@ package regex
 
 import (
 	"github.com/go-kit/kit/metrics/discard"
-	errors "gopkg.in/src-d/go-errors.v1"
+	errors errors "gopkg.in/src-d/go-errors.v1"
 )
 
 var (

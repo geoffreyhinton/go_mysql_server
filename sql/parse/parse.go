@@ -15,7 +15,7 @@ import (
 	"github.com/geoffreyhinton/go_mysql_server/sql/expression/function/aggregation"
 	"github.com/geoffreyhinton/go_mysql_server/sql/plan"
 	"github.com/opentracing/opentracing-go"
-	"gopkg.in/src-d/go-errors.v1"
+	errors "gopkg.in/src-d/go-errors.v1"
 	"vitess.io/vitess/go/vt/sqlparser"
 )
 

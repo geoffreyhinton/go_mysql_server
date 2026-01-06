@@ -8,7 +8,7 @@ import (
 	"github.com/geoffreyhinton/go_mysql_server/sql/expression"
 	"github.com/geoffreyhinton/go_mysql_server/sql/expression/function/aggregation"
 	"github.com/geoffreyhinton/go_mysql_server/sql/plan"
-	"gopkg.in/src-d/go-errors.v1"
+	errors "gopkg.in/src-d/go-errors.v1"
 )
 
 func resolveHaving(ctx *sql.Context, a *Analyzer, node sql.Node) (sql.Node, error) {

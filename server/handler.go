@@ -14,7 +14,7 @@ import (
 	"github.com/geoffreyhinton/go_mysql_server/auth"
 	"github.com/geoffreyhinton/go_mysql_server/internal/sockstate"
 	"github.com/geoffreyhinton/go_mysql_server/sql"
-	"gopkg.in/src-d/go-errors.v1"
+	errors "gopkg.in/src-d/go-errors.v1"
 
 	"github.com/sirupsen/logrus"
 	"vitess.io/vitess/go/mysql"

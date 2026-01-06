@@ -7,7 +7,7 @@ import (
 
 	"github.com/geoffreyhinton/go_mysql_server/internal/similartext"
 
-	"gopkg.in/src-d/go-errors.v1"
+	errors "gopkg.in/src-d/go-errors.v1"
 )
 
 // ErrDatabaseNotFound is thrown when a database is not found

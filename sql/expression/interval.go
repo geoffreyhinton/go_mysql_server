@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/geoffreyhinton/go_mysql_server/sql"
-	errors "gopkg.in/src-d/go-errors.v1"
+	errors errors "gopkg.in/src-d/go-errors.v1"
 )
 
 // Interval defines a time duration.

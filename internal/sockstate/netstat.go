@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net"
 
-	"gopkg.in/src-d/go-errors.v1"
+	errors "gopkg.in/src-d/go-errors.v1"
 )
 
 // OS independent part of the netstat_[OS].go modules

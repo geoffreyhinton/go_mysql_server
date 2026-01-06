@@ -7,7 +7,7 @@ import (
 
 	"github.com/geoffreyhinton/go_mysql_server/sql"
 	"github.com/geoffreyhinton/go_mysql_server/sql/plan"
-	errors "gopkg.in/src-d/go-errors.v1"
+	errors errors "gopkg.in/src-d/go-errors.v1"
 )
 
 var errInvalidIndex = errors.NewKind("invalid %s index %d (index must be non-negative)")

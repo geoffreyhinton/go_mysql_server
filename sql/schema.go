@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"strings"
 
-	"gopkg.in/src-d/go-errors.v1"
+	errors "gopkg.in/src-d/go-errors.v1"
 )
 
 var (

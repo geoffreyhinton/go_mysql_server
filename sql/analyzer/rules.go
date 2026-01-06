@@ -1,7 +1,7 @@
 package analyzer
 
 import (
-	errors "gopkg.in/src-d/go-errors.v1"
+	errors errors "gopkg.in/src-d/go-errors.v1"
 )
 
 // DefaultRules to apply when analyzing nodes.

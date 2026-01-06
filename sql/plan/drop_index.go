@@ -3,7 +3,7 @@ package plan
 import (
 	"github.com/geoffreyhinton/go_mysql_server/internal/similartext"
 	"github.com/geoffreyhinton/go_mysql_server/sql"
-	"gopkg.in/src-d/go-errors.v1"
+	errors errors "gopkg.in/src-d/go-errors.v1"
 )
 
 var (

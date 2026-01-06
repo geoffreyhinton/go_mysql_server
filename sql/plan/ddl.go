@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/geoffreyhinton/go_mysql_server/sql"
-	"gopkg.in/src-d/go-errors.v1"
+	errors errors "gopkg.in/src-d/go-errors.v1"
 )
 
 // ErrCreateTable is thrown when the database doesn't support table creation

@@ -9,7 +9,7 @@ import (
 	"github.com/geoffreyhinton/go_mysql_server/sql/expression"
 	"github.com/geoffreyhinton/go_mysql_server/sql/expression/function"
 	"github.com/geoffreyhinton/go_mysql_server/sql/plan"
-	"gopkg.in/src-d/go-errors.v1"
+	errors "gopkg.in/src-d/go-errors.v1"
 )
 
 const (

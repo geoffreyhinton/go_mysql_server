@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/geoffreyhinton/go_mysql_server/sql"
-	errors "gopkg.in/src-d/go-errors.v1"
+	errors errors "gopkg.in/src-d/go-errors.v1"
 )
 
 // GetField is an expression to get the field of a table.

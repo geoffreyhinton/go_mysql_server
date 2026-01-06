@@ -2,7 +2,7 @@ package sql
 
 import (
 	"github.com/geoffreyhinton/go_mysql_server/internal/similartext"
-	"gopkg.in/src-d/go-errors.v1"
+	errors "gopkg.in/src-d/go-errors.v1"
 )
 
 // ErrFunctionAlreadyRegistered is thrown when a function is already registered

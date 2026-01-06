@@ -3,7 +3,7 @@ package sql
 import (
 	"io"
 
-	"gopkg.in/src-d/go-errors.v1"
+	errors "gopkg.in/src-d/go-errors.v1"
 )
 
 // Generator will generate a set of values for a given row.
