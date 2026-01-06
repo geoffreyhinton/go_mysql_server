@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/geoffreyhinton/go_mysql_server/sql"
-	errors errors "gopkg.in/src-d/go-errors.v1"
+	errors "gopkg.in/src-d/go-errors.v1"
 )
 
 // Concat joins several strings together.

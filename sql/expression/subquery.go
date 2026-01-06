@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/geoffreyhinton/go_mysql_server/sql"
-	errors errors "gopkg.in/src-d/go-errors.v1"
+	errors "gopkg.in/src-d/go-errors.v1"
 )
 
 var errExpectedSingleRow = errors.NewKind("the subquery returned more than 1 row")

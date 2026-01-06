@@ -7,7 +7,7 @@ import (
 
 	"github.com/geoffreyhinton/go_mysql_server/sql"
 	"github.com/geoffreyhinton/go_mysql_server/sql/expression"
-	errors errors "gopkg.in/src-d/go-errors.v1"
+	errors "gopkg.in/src-d/go-errors.v1"
 )
 
 // RegexpMatches returns the matches of a regular expression.
