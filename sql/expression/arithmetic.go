@@ -5,10 +5,9 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/geoffreyhinton/go_mysql_server/sql"
 	errors "gopkg.in/src-d/go-errors.v1"
 	"vitess.io/vitess/go/vt/sqlparser"
-
-	"github.com/geoffreyhinton/go_mysql_server//sql"
 )
 
 var (
