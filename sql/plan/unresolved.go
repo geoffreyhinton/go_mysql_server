@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/geoffreyhinton/go_mysql_server/sql"
-	errors errors "gopkg.in/src-d/go-errors.v1"
+	errors "gopkg.in/src-d/go-errors.v1"
 )
 
 // ErrUnresolvedTable is thrown when a table cannot be resolved

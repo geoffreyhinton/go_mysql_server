@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"sync"
 
-	errors errors "gopkg.in/src-d/go-errors.v1"
+	errors "gopkg.in/src-d/go-errors.v1"
 )
 
 // Disposable objects can erase all their content when they're no longer in use.
