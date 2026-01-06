@@ -2,13 +2,12 @@ package sql
 
 import (
 	"fmt"
+	"gopkg.in/src-d/go-errors.v1"
 	"io"
 	"math"
 	"strconv"
 	"strings"
 	"time"
-
-	"gopkg.in/src-d/go-errors.v0"
 )
 
 var (
@@ -422,7 +421,7 @@ type TableRenamer interface {
 
 // ColumnOrder is used in ALTER TABLE statements to change the order of inserted / modified columns.
 type ColumnOrder struct {
-	First       bool   // True if this column should come first
+	First bool // True if this column should come first
 	AfterColumn string // Set to the name of the column after which this column should appear
 }
 

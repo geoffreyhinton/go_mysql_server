@@ -5,9 +5,9 @@ import (
 	"math/big"
 
 	"github.com/shopspring/decimal"
-	errors "gopkg.in/src-d/go-errors.v1"
-	"gopkg.in/src-d/go-vitess.v0/sqltypes"
-	"gopkg.in/src-d/go-vitess.v0/vt/proto/query"
+	"gopkg.in/src-d/go-errors.v1"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/proto/query"
 )
 
 const (
@@ -16,11 +16,11 @@ const (
 	// DecimalTypeMaxScale returns the maximum scale allowed for the Decimal type, assuming the
 	// maximum precision is used. For a maximum scale that is relative to the precision of a given
 	// decimal type, use its MaximumScale function.
-	DecimalTypeMaxScale = 30
+	DecimalTypeMaxScale     = 30
 )
 
 var (
-	ErrConvertingToDecimal   = errors.NewKind("value %v is not a valid Decimal")
+	ErrConvertingToDecimal = errors.NewKind("value %v is not a valid Decimal")
 	ErrConvertToDecimalLimit = errors.NewKind("value of Decimal is too large for type")
 )
 
@@ -32,9 +32,9 @@ type DecimalType interface {
 	Scale() uint8
 }
 
-type decimalType struct {
+type decimalType struct{
 	precision uint8
-	scale     uint8
+	scale uint8
 }
 
 // CreateDecimalType creates a DecimalType.
@@ -53,7 +53,7 @@ func CreateDecimalType(precision uint8, scale uint8) (DecimalType, error) {
 	}
 	return decimalType{
 		precision: precision,
-		scale:     scale,
+		scale: scale,
 	}, nil
 }
 
@@ -168,7 +168,7 @@ func (t decimalType) ConvertToDecimal(v interface{}) (decimal.NullDecimal, error
 
 	res = res.Round(int32(t.scale))
 	// This sets the upper bound for this type. This is computed as 10^(precision - scale).
-	max := decimal.New(1, int32(t.precision-t.scale))
+	max := decimal.New(1, int32(t.precision - t.scale))
 	if res.Abs().Cmp(max) != -1 {
 		return decimal.NullDecimal{}, ErrConvertToDecimalLimit.New()
 	}

@@ -6,7 +6,8 @@ import (
 	"sync"
 
 	"github.com/geoffreyhinton/go_mysql_server/internal/similartext"
-	errors "gopkg.in/src-d/go-errors.v1"
+
+	"gopkg.in/src-d/go-errors.v1"
 )
 
 // ErrDatabaseNotFound is thrown when a database is not found
@@ -81,6 +82,7 @@ func (c *Catalog) Database(db string) (Database, error) {
 	return c.dbs.Database(db)
 }
 
+// Table returns the table in the given database with the given name.
 func (c *Catalog) Table(ctx *Context, db, table string) (Table, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

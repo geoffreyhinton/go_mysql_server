@@ -2,8 +2,10 @@ package plan
 
 import (
 	"io"
+	"reflect"
 
 	"github.com/geoffreyhinton/go_mysql_server/sql"
+	opentracing "github.com/opentracing/opentracing-go"
 )
 
 // CrossJoin is a cross join between two tables.
@@ -32,98 +34,118 @@ func (p *CrossJoin) Resolved() bool {
 }
 
 // RowIter implements the Node interface.
-func (p *CrossJoin) RowIter() (sql.RowIter, error) {
-	li, err := p.Left.RowIter()
+func (p *CrossJoin) RowIter(ctx *sql.Context) (sql.RowIter, error) {
+	var left, right string
+	if leftTable, ok := p.Left.(sql.Nameable); ok {
+		left = leftTable.Name()
+	} else {
+		left = reflect.TypeOf(p.Left).String()
+	}
+
+	if rightTable, ok := p.Right.(sql.Nameable); ok {
+		right = rightTable.Name()
+	} else {
+		right = reflect.TypeOf(p.Right).String()
+	}
+
+	span, ctx := ctx.Span("plan.CrossJoin", opentracing.Tags{
+		"left":  left,
+		"right": right,
+	})
+
+	li, err := p.Left.RowIter(ctx)
 	if err != nil {
+		span.Finish()
 		return nil, err
 	}
 
-	ri, err := p.Right.RowIter()
-	if err != nil {
-		return nil, err
+	return sql.NewSpanIter(span, &crossJoinIterator{
+		l:  li,
+		rp: p.Right,
+		s:  ctx,
+	}), nil
+}
+
+// WithChildren implements the Node interface.
+func (p *CrossJoin) WithChildren(children ...sql.Node) (sql.Node, error) {
+	if len(children) != 2 {
+		return nil, sql.ErrInvalidChildrenNumber.New(p, len(children), 2)
 	}
 
-	return &crossJoinIterator{
-		li: li,
-		ri: ri,
-	}, nil
+	return NewCrossJoin(children[0], children[1]), nil
 }
 
-// TransformUp implements the Transformable interface.
-func (p *CrossJoin) TransformUp(f func(sql.Node) sql.Node) sql.Node {
-	ln := p.BinaryNode.Left.TransformUp(f)
-	rn := p.BinaryNode.Right.TransformUp(f)
-
-	n := NewCrossJoin(ln, rn)
-
-	return f(n)
+func (p *CrossJoin) String() string {
+	pr := sql.NewTreePrinter()
+	_ = pr.WriteNode("CrossJoin")
+	_ = pr.WriteChildren(p.Left.String(), p.Right.String())
+	return pr.String()
 }
 
-// TransformExpressionsUp implements the Transformable interface.
-func (p *CrossJoin) TransformExpressionsUp(f func(sql.Expression) sql.Expression) sql.Node {
-	ln := p.BinaryNode.Left.TransformExpressionsUp(f)
-	rn := p.BinaryNode.Right.TransformExpressionsUp(f)
-
-	return NewCrossJoin(ln, rn)
+type rowIterProvider interface {
+	RowIter(*sql.Context) (sql.RowIter, error)
 }
 
 type crossJoinIterator struct {
-	li sql.RowIter
-	ri sql.RowIter
+	l  sql.RowIter
+	rp rowIterProvider
+	r  sql.RowIter
+	s  *sql.Context
 
-	// TODO use a method to reset right iterator in order to not duplicate rows into memory
-	rightRows []sql.Row
-	index     int
-	leftRow   sql.Row
+	leftRow sql.Row
 }
 
 func (i *crossJoinIterator) Next() (sql.Row, error) {
-	if len(i.rightRows) == 0 {
-		if err := i.fillRows(); err != io.EOF {
-			return nil, err
-		}
-
-		if len(i.rightRows) == 0 {
-			return nil, io.EOF
-		}
-	}
-
-	if i.leftRow == nil {
-		lr, err := i.li.Next()
-		if err != nil {
-			return nil, err
-		}
-
-		i.index = 0
-		i.leftRow = lr
-	}
-
-	row := append(i.leftRow, i.rightRows[i.index]...)
-	i.index++
-	if i.index >= len(i.rightRows) {
-		i.index = 0
-		i.leftRow = nil
-	}
-
-	return row, nil
-}
-
-func (i *crossJoinIterator) Close() error {
-	if err := i.li.Close(); err != nil {
-		_ = i.ri.Close()
-		return err
-	}
-
-	return i.ri.Close()
-}
-
-func (i *crossJoinIterator) fillRows() error {
 	for {
-		rr, err := i.ri.Next()
-		if err != nil {
-			return err
+		if i.leftRow == nil {
+			r, err := i.l.Next()
+			if err != nil {
+				return nil, err
+			}
+
+			i.leftRow = r
 		}
 
-		i.rightRows = append(i.rightRows, rr)
+		if i.r == nil {
+			iter, err := i.rp.RowIter(i.s)
+			if err != nil {
+				return nil, err
+			}
+
+			i.r = iter
+		}
+
+		rightRow, err := i.r.Next()
+		if err == io.EOF {
+			i.r = nil
+			i.leftRow = nil
+			continue
+		}
+
+		if err != nil {
+			return nil, err
+		}
+
+		var row sql.Row
+		row = append(row, i.leftRow...)
+		row = append(row, rightRow...)
+
+		return row, nil
 	}
+}
+
+func (i *crossJoinIterator) Close() (err error) {
+	if i.l != nil {
+		err = i.l.Close()
+	}
+
+	if i.r != nil {
+		if err == nil {
+			err = i.r.Close()
+		} else {
+			i.r.Close()
+		}
+	}
+
+	return err
 }

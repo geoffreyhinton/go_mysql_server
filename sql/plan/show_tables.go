@@ -1,7 +1,6 @@
 package plan
 
 import (
-	"io"
 	"sort"
 
 	"github.com/geoffreyhinton/go_mysql_server/sql"
@@ -9,19 +8,44 @@ import (
 
 // ShowTables is a node that shows the database tables.
 type ShowTables struct {
-	database sql.Database
+	db   sql.Database
+	Full bool
+}
+
+var showTablesSchema = sql.Schema{
+	{Name: "Table", Type: sql.LongText},
+}
+
+var showTablesFullSchema = sql.Schema{
+	{Name: "Table", Type: sql.LongText},
+	{Name: "Table_type", Type: sql.LongText},
 }
 
 // NewShowTables creates a new show tables node given a database.
-func NewShowTables(database sql.Database) *ShowTables {
+func NewShowTables(database sql.Database, full bool) *ShowTables {
 	return &ShowTables{
-		database: database,
+		db:   database,
+		Full: full,
 	}
+}
+
+var _ sql.Databaser = (*ShowTables)(nil)
+
+// Database implements the sql.Databaser interface.
+func (p *ShowTables) Database() sql.Database {
+	return p.db
+}
+
+// WithDatabase implements the sql.Databaser interface.
+func (p *ShowTables) WithDatabase(db sql.Database) (sql.Node, error) {
+	nc := *p
+	nc.db = db
+	return &nc, nil
 }
 
 // Resolved implements the Resolvable interface.
 func (p *ShowTables) Resolved() bool {
-	_, ok := p.database.(*sql.UnresolvedDatabase)
+	_, ok := p.db.(sql.UnresolvedDatabase)
 	return !ok
 }
 
@@ -31,52 +55,57 @@ func (*ShowTables) Children() []sql.Node {
 }
 
 // Schema implements the Node interface.
-func (*ShowTables) Schema() sql.Schema {
-	return sql.Schema{{
-		Name:     "table",
-		Type:     sql.Text,
-		Nullable: false,
-	}}
+func (p *ShowTables) Schema() sql.Schema {
+	if p.Full {
+		return showTablesFullSchema
+	}
+
+	return showTablesSchema
 }
 
 // RowIter implements the Node interface.
-func (p *ShowTables) RowIter() (sql.RowIter, error) {
-	tableNames := []string{}
-	for key := range p.database.Tables() {
-		tableNames = append(tableNames, key)
+func (p *ShowTables) RowIter(ctx *sql.Context) (sql.RowIter, error) {
+	tableNames, err := p.db.GetTableNames(ctx)
+
+	if err != nil {
+		return nil, err
 	}
 
 	sort.Strings(tableNames)
 
-	return &showTablesIter{tableNames: tableNames}, nil
-}
-
-// TransformUp implements the Transformable interface.
-func (p *ShowTables) TransformUp(f func(sql.Node) sql.Node) sql.Node {
-	return f(NewShowTables(p.database))
-}
-
-// TransformExpressionsUp implements the Transformable interface.
-func (p *ShowTables) TransformExpressionsUp(f func(sql.Expression) sql.Expression) sql.Node {
-	return p
-}
-
-type showTablesIter struct {
-	tableNames []string
-	idx        int
-}
-
-func (i *showTablesIter) Next() (sql.Row, error) {
-	if i.idx >= len(i.tableNames) {
-		return nil, io.EOF
+	var rows []sql.Row
+	for _, tableName := range tableNames {
+		row := sql.Row{tableName}
+		if p.Full {
+			row = append(row, "BASE TABLE")
+		}
+		rows = append(rows, row)
 	}
-	row := sql.NewRow(i.tableNames[i.idx])
-	i.idx++
 
-	return row, nil
+	for _, view := range ctx.ViewsInDatabase(p.db.Name()) {
+		row := sql.Row{view.Name()}
+		if p.Full {
+			row = append(row, "VIEW")
+		}
+		rows = append(rows, row)
+	}
+
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i][0].(string) < rows[j][0].(string)
+	})
+
+	return sql.RowsToRowIter(rows...), nil
 }
 
-func (i *showTablesIter) Close() error {
-	i.tableNames = nil
-	return nil
+// WithChildren implements the Node interface.
+func (p *ShowTables) WithChildren(children ...sql.Node) (sql.Node, error) {
+	if len(children) != 0 {
+		return nil, sql.ErrInvalidChildrenNumber.New(p, len(children), 0)
+	}
+
+	return p, nil
+}
+
+func (p ShowTables) String() string {
+	return "ShowTables"
 }

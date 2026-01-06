@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io"
 
-	"gopkg.in/src-d/go-vitess.v0/sqltypes"
-	"gopkg.in/src-d/go-vitess.v0/vt/proto/query"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/proto/query"
 )
 
 type arrayType struct {

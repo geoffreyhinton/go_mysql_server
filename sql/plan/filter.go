@@ -1,75 +1,108 @@
 package plan
 
-import "github.com/geoffreyhinton/go_mysql_server/sql"
+import (
+	"github.com/geoffreyhinton/go_mysql_server/sql"
+)
 
 // Filter skips rows that don't match a certain expression.
 type Filter struct {
 	UnaryNode
-	expression sql.Expression
+	Expression sql.Expression
 }
 
 // NewFilter creates a new filter node.
 func NewFilter(expression sql.Expression, child sql.Node) *Filter {
 	return &Filter{
 		UnaryNode:  UnaryNode{Child: child},
-		expression: expression,
+		Expression: expression,
 	}
 }
 
 // Resolved implements the Resolvable interface.
 func (p *Filter) Resolved() bool {
-	return p.UnaryNode.Child.Resolved() && p.expression.Resolved()
+	return p.UnaryNode.Child.Resolved() && p.Expression.Resolved()
 }
 
 // RowIter implements the Node interface.
-func (p *Filter) RowIter() (sql.RowIter, error) {
-	i, err := p.Child.RowIter()
+func (p *Filter) RowIter(ctx *sql.Context) (sql.RowIter, error) {
+	span, ctx := ctx.Span("plan.Filter")
+
+	i, err := p.Child.RowIter(ctx)
 	if err != nil {
+		span.Finish()
 		return nil, err
 	}
-	return &filterIter{p, i}, nil
+
+	return sql.NewSpanIter(span, NewFilterIter(ctx, p.Expression, i)), nil
 }
 
-// TransformUp implements the Transformable interface.
-func (p *Filter) TransformUp(f func(sql.Node) sql.Node) sql.Node {
-	c := p.UnaryNode.Child.TransformUp(f)
-	n := NewFilter(p.expression, c)
+// WithChildren implements the Node interface.
+func (p *Filter) WithChildren(children ...sql.Node) (sql.Node, error) {
+	if len(children) != 1 {
+		return nil, sql.ErrInvalidChildrenNumber.New(p, len(children), 1)
+	}
 
-	return f(n)
+	return NewFilter(p.Expression, children[0]), nil
 }
 
-// TransformExpressionsUp implements the Transformable interface.
-func (p *Filter) TransformExpressionsUp(f func(sql.Expression) sql.Expression) sql.Node {
-	c := p.UnaryNode.Child.TransformExpressionsUp(f)
-	e := p.expression.TransformUp(f)
-	n := NewFilter(e, c)
+// WithExpressions implements the Expressioner interface.
+func (p *Filter) WithExpressions(exprs ...sql.Expression) (sql.Node, error) {
+	if len(exprs) != 1 {
+		return nil, sql.ErrInvalidChildrenNumber.New(p, len(exprs), 1)
+	}
 
-	return n
+	return NewFilter(exprs[0], p.Child), nil
 }
 
-type filterIter struct {
-	f         *Filter
+func (p *Filter) String() string {
+	pr := sql.NewTreePrinter()
+	_ = pr.WriteNode("Filter(%s)", p.Expression)
+	_ = pr.WriteChildren(p.Child.String())
+	return pr.String()
+}
+
+// Expressions implements the Expressioner interface.
+func (p *Filter) Expressions() []sql.Expression {
+	return []sql.Expression{p.Expression}
+}
+
+// FilterIter is an iterator that filters another iterator and skips rows that
+// don't match the given condition.
+type FilterIter struct {
+	cond      sql.Expression
 	childIter sql.RowIter
+	ctx       *sql.Context
 }
 
-func (i *filterIter) Next() (sql.Row, error) {
+// NewFilterIter creates a new FilterIter.
+func NewFilterIter(
+	ctx *sql.Context,
+	cond sql.Expression,
+	child sql.RowIter,
+) *FilterIter {
+	return &FilterIter{cond, child, ctx}
+}
+
+// Next implements the RowIter interface.
+func (i *FilterIter) Next() (sql.Row, error) {
 	for {
 		row, err := i.childIter.Next()
 		if err != nil {
 			return nil, err
 		}
 
-		result, err := i.f.expression.Eval(row)
+		ok, err := sql.EvaluateCondition(i.ctx, i.cond, row)
 		if err != nil {
 			return nil, err
 		}
 
-		if result == true {
+		if ok {
 			return row, nil
 		}
 	}
 }
 
-func (i *filterIter) Close() error {
+// Close implements the RowIter interface.
+func (i *FilterIter) Close() error {
 	return i.childIter.Close()
 }

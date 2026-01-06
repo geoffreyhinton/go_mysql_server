@@ -5,9 +5,9 @@ import (
 	"strconv"
 	"strings"
 
-	errors "gopkg.in/src-d/go-errors.v1"
-	"gopkg.in/src-d/go-vitess.v0/sqltypes"
-	"gopkg.in/src-d/go-vitess.v0/vt/proto/query"
+	"gopkg.in/src-d/go-errors.v1"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/proto/query"
 )
 
 const (
@@ -35,8 +35,8 @@ type EnumType interface {
 	Values() []string
 }
 
-type enumType struct {
-	collation  Collation
+type enumType struct{
+	collation Collation
 	valToIndex map[string]int
 	indexToVal []string
 }
@@ -63,7 +63,7 @@ func CreateEnumType(values []string, collation Collation) (EnumType, error) {
 		valToIndex[value] = i + 1
 	}
 	return enumType{
-		collation:  collation,
+		collation: collation,
 		valToIndex: valToIndex,
 		indexToVal: values,
 	}, nil
@@ -139,7 +139,7 @@ func (t enumType) Convert(v interface{}) (interface{}, error) {
 			realStr, _ := t.At(index)
 			return realStr, nil
 		}
-		return nil, ErrConvertingToEnum.New(`"` + value + `"`)
+		return nil, ErrConvertingToEnum.New(`"`+value+`"`)
 	case []byte:
 		return t.Convert(string(value))
 	}
