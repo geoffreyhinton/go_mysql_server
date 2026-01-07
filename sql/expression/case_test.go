@@ -281,3 +281,90 @@ func TestCaseWithChildren(t *testing.T) {
 	require.Equal(t, exprNoElseChildren[2], enec.Branches[0].Value)
 	require.Nil(t, enec.Else)
 }
+
+func TestCaseChildren(t *testing.T) {
+	require := require.New(t)
+
+	// Test case with all components: expr, branches, and else
+	expr := NewGetField(0, sql.Int64, "foo", false)
+	branch1Cond := NewLiteral(int64(1), sql.Int64)
+	branch1Value := NewLiteral(int64(2), sql.Int64)
+	branch2Cond := NewLiteral(int64(3), sql.Int64)
+	branch2Value := NewLiteral(int64(4), sql.Int64)
+	elseExpr := NewLiteral(int64(7), sql.Int64)
+
+	caseWithAll := NewCase(
+		expr,
+		[]CaseBranch{
+			{Cond: branch1Cond, Value: branch1Value},
+			{Cond: branch2Cond, Value: branch2Value},
+		},
+		elseExpr,
+	)
+
+	children := caseWithAll.Children()
+	expected := []sql.Expression{
+		expr,            // expr comes first
+		branch1Cond,     // then branch conditions and values in pairs
+		branch1Value,
+		branch2Cond,
+		branch2Value,
+		elseExpr,        // else comes last
+	}
+	require.Equal(expected, children)
+
+	// Test case without expr (searched case)
+	caseNoExpr := NewCase(
+		nil,
+		[]CaseBranch{
+			{Cond: branch1Cond, Value: branch1Value},
+			{Cond: branch2Cond, Value: branch2Value},
+		},
+		elseExpr,
+	)
+
+	children = caseNoExpr.Children()
+	expected = []sql.Expression{
+		// no expr at beginning
+		branch1Cond,
+		branch1Value,
+		branch2Cond,
+		branch2Value,
+		elseExpr,
+	}
+	require.Equal(expected, children)
+
+	// Test case without else
+	caseNoElse := NewCase(
+		expr,
+		[]CaseBranch{
+			{Cond: branch1Cond, Value: branch1Value},
+		},
+		nil,
+	)
+
+	children = caseNoElse.Children()
+	expected = []sql.Expression{
+		expr,
+		branch1Cond,
+		branch1Value,
+		// no else at end
+	}
+	require.Equal(expected, children)
+
+	// Test case with only branches (no expr, no else)
+	caseOnlyBranches := NewCase(
+		nil,
+		[]CaseBranch{
+			{Cond: branch1Cond, Value: branch1Value},
+		},
+		nil,
+	)
+
+	children = caseOnlyBranches.Children()
+	expected = []sql.Expression{
+		branch1Cond,
+		branch1Value,
+	}
+	require.Equal(expected, children)
+}
