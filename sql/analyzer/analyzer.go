@@ -1,103 +1,193 @@
 package analyzer
 
 import (
-	"fmt"
-	"reflect"
+	"os"
 
 	"github.com/geoffreyhinton/go_mysql_server/sql"
-	multierror "github.com/hashicorp/go-multierror"
+	opentracing "github.com/opentracing/opentracing-go"
+	"github.com/sirupsen/logrus"
+	errors "gopkg.in/src-d/go-errors.v1"
 )
 
+const debugAnalyzerKey = "DEBUG_ANALYZER"
+
 const maxAnalysisIterations = 1000
+
+// ErrMaxAnalysisIters is thrown when the analysis iterations are exceeded
+var ErrMaxAnalysisIters = errors.NewKind("exceeded max analysis iterations (%d)")
+
+// Builder provides an easy way to generate Analyzer with custom rules and options.
+type Builder struct {
+	preAnalyzeRules     []Rule
+	postAnalyzeRules    []Rule
+	preValidationRules  []Rule
+	postValidationRules []Rule
+	catalog             *sql.Catalog
+	debug               bool
+	parallelism         int
+}
+
+// NewBuilder creates a new Builder from a specific catalog.
+// This builder allow us add custom Rules and modify some internal properties.
+func NewBuilder(c *sql.Catalog) *Builder {
+	return &Builder{catalog: c}
+}
+
+// WithDebug activates debug on the Analyzer.
+func (ab *Builder) WithDebug() *Builder {
+	ab.debug = true
+
+	return ab
+}
+
+// WithParallelism sets the parallelism level on the analyzer.
+func (ab *Builder) WithParallelism(parallelism int) *Builder {
+	ab.parallelism = parallelism
+	return ab
+}
+
+// AddPreAnalyzeRule adds a new rule to the analyze before the standard analyzer rules.
+func (ab *Builder) AddPreAnalyzeRule(name string, fn RuleFunc) *Builder {
+	ab.preAnalyzeRules = append(ab.preAnalyzeRules, Rule{name, fn})
+
+	return ab
+}
+
+// AddPostAnalyzeRule adds a new rule to the analyzer after standard analyzer rules.
+func (ab *Builder) AddPostAnalyzeRule(name string, fn RuleFunc) *Builder {
+	ab.postAnalyzeRules = append(ab.postAnalyzeRules, Rule{name, fn})
+
+	return ab
+}
+
+// AddPreValidationRule adds a new rule to the analyzer before standard validation rules.
+func (ab *Builder) AddPreValidationRule(name string, fn RuleFunc) *Builder {
+	ab.preValidationRules = append(ab.preValidationRules, Rule{name, fn})
+
+	return ab
+}
+
+// AddPostValidationRule adds a new rule to the analyzer after standard validation rules.
+func (ab *Builder) AddPostValidationRule(name string, fn RuleFunc) *Builder {
+	ab.postValidationRules = append(ab.postValidationRules, Rule{name, fn})
+
+	return ab
+}
+
+// Build creates a new Analyzer using all previous data setted to the Builder
+func (ab *Builder) Build() *Analyzer {
+	_, debug := os.LookupEnv(debugAnalyzerKey)
+	var batches = []*Batch{
+		&Batch{
+			Desc:       "pre-analyzer rules",
+			Iterations: maxAnalysisIterations,
+			Rules:      ab.preAnalyzeRules,
+		},
+		&Batch{
+			Desc:       "once execution rule before default",
+			Iterations: 1,
+			Rules:      OnceBeforeDefault,
+		},
+		&Batch{
+			Desc:       "analyzer rules",
+			Iterations: maxAnalysisIterations,
+			Rules:      DefaultRules,
+		},
+		&Batch{
+			Desc:       "once execution rules after default",
+			Iterations: 1,
+			Rules:      OnceAfterDefault,
+		},
+		&Batch{
+			Desc:       "post-analyzer rules",
+			Iterations: maxAnalysisIterations,
+			Rules:      ab.postAnalyzeRules,
+		},
+		&Batch{
+			Desc:       "pre-validation rules",
+			Iterations: 1,
+			Rules:      ab.preValidationRules,
+		},
+		&Batch{
+			Desc:       "validation rules",
+			Iterations: 1,
+			Rules:      DefaultValidationRules,
+		},
+		&Batch{
+			Desc:       "post-validation rules",
+			Iterations: 1,
+			Rules:      ab.postValidationRules,
+		},
+		&Batch{
+			Desc:       "after-all rules",
+			Iterations: 1,
+			Rules:      OnceAfterAll,
+		},
+	}
+
+	return &Analyzer{
+		Debug:       debug || ab.debug,
+		Batches:     batches,
+		Catalog:     ab.catalog,
+		Parallelism: ab.parallelism,
+	}
+}
 
 // Analyzer analyzes nodes of the execution plan and applies rules and validations
 // to them.
 type Analyzer struct {
-	// Rules to apply.
-	Rules []Rule
-	// ValidationRules to apply.
-	ValidationRules []ValidationRule
+	Debug       bool
+	Parallelism int
+	// Batches of Rules to apply.
+	Batches []*Batch
 	// Catalog of databases and registered functions.
 	Catalog *sql.Catalog
-	// CurrentDatabase in use.
-	CurrentDatabase string
 }
 
-// Rule to transform nodes.
-type Rule struct {
-	// Name of the rule.
-	Name string
-	// Apply transforms a node.
-	Apply func(*Analyzer, sql.Node) sql.Node
+// NewDefault creates a default Analyzer instance with all default Rules and configuration.
+// To add custom rules, the easiest way is use the Builder.
+func NewDefault(c *sql.Catalog) *Analyzer {
+	return NewBuilder(c).Build()
 }
 
-// ValidationRule validates the given nodes.
-type ValidationRule struct {
-	// Name of the rule.
-	Name string
-	// Apply validates the given node.
-	Apply func(sql.Node) error
-}
-
-// New returns a new Analyzer given a catalog.
-func New(catalog *sql.Catalog) *Analyzer {
-	return &Analyzer{
-		Rules:           DefaultRules,
-		ValidationRules: DefaultValidationRules,
-		Catalog:         catalog,
+// Log prints an INFO message to stdout with the given message and args
+// if the analyzer is in debug mode.
+func (a *Analyzer) Log(msg string, args ...interface{}) {
+	if a != nil && a.Debug {
+		logrus.Infof(msg, args...)
 	}
 }
 
 // Analyze the node and all its children.
-func (a *Analyzer) Analyze(n sql.Node) (sql.Node, error) {
+func (a *Analyzer) Analyze(ctx *sql.Context, n sql.Node) (sql.Node, error) {
+	span, ctx := ctx.Span("analyze", opentracing.Tags{
+		"plan": n.String(),
+	})
+
 	prev := n
-	cur := a.analyzeOnce(n)
-	i := 0
-	for !reflect.DeepEqual(prev, cur) {
-		prev = cur
-		cur = a.analyzeOnce(n)
-		i++
-		if i >= maxAnalysisIterations {
-			return cur, fmt.Errorf("exceeded max analysis iterations (%d)", maxAnalysisIterations)
+	var err error
+	a.Log("starting analysis of node of type: %T", n)
+	for _, batch := range a.Batches {
+		prev, err = batch.Eval(ctx, a, prev)
+		if ErrMaxAnalysisIters.Is(err) {
+			a.Log("%s", err.Error())
+			continue
 		}
-	}
-
-	if errs := a.validate(cur); len(errs) != 0 {
-		var err error
-		for _, e := range errs {
-			err = multierror.Append(err, e)
-		}
-		return cur, err
-	}
-
-	return cur, nil
-}
-
-func (a *Analyzer) analyzeOnce(n sql.Node) sql.Node {
-	result := n
-	for _, rule := range a.Rules {
-		result = rule.Apply(a, result)
-	}
-	return result
-}
-
-func (a *Analyzer) validate(n sql.Node) (validationErrors []error) {
-	validationErrors = append(validationErrors, a.validateOnce(n)...)
-
-	for _, node := range n.Children() {
-		validationErrors = append(validationErrors, a.validate(node)...)
-	}
-
-	return validationErrors
-}
-
-func (a *Analyzer) validateOnce(n sql.Node) (validationErrors []error) {
-	for _, rule := range a.ValidationRules {
-		err := rule.Apply(n)
 		if err != nil {
-			validationErrors = append(validationErrors, err)
+			return nil, err
 		}
 	}
 
-	return validationErrors
+	defer func() {
+		if prev != nil {
+			span.SetTag("IsResolved", prev.Resolved())
+		}
+		span.Finish()
+	}()
+
+	return prev, err
+}
+
+type equaler interface {
+	Equal(sql.Node) bool
 }

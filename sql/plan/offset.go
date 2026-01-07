@@ -1,18 +1,21 @@
 package plan
 
-import "github.com/geoffreyhinton/go_mysql_server/sql"
+import (
+	"github.com/geoffreyhinton/go_mysql_server/sql"
+	opentracing "github.com/opentracing/opentracing-go"
+)
 
 // Offset is a node that skips the first N rows.
 type Offset struct {
 	UnaryNode
-	n int64
+	Offset int64
 }
 
 // NewOffset creates a new Offset node.
 func NewOffset(n int64, child sql.Node) *Offset {
 	return &Offset{
 		UnaryNode: UnaryNode{Child: child},
-		n:         n,
+		Offset:    n,
 	}
 }
 
@@ -22,24 +25,30 @@ func (o *Offset) Resolved() bool {
 }
 
 // RowIter implements the Node interface.
-func (o *Offset) RowIter() (sql.RowIter, error) {
-	it, err := o.Child.RowIter()
+func (o *Offset) RowIter(ctx *sql.Context) (sql.RowIter, error) {
+	span, ctx := ctx.Span("plan.Offset", opentracing.Tag{Key: "offset", Value: o.Offset})
+
+	it, err := o.Child.RowIter(ctx)
 	if err != nil {
+		span.Finish()
 		return nil, err
 	}
-	return &offsetIter{o.n, it}, nil
+	return sql.NewSpanIter(span, &offsetIter{o.Offset, it}), nil
 }
 
-// TransformUp implements the Transformable interface.
-func (o *Offset) TransformUp(f func(sql.Node) sql.Node) sql.Node {
-	c := o.Child.TransformUp(f)
-	return f(NewOffset(o.n, c))
+// WithChildren implements the Node interface.
+func (o *Offset) WithChildren(children ...sql.Node) (sql.Node, error) {
+	if len(children) != 1 {
+		return nil, sql.ErrInvalidChildrenNumber.New(o, len(children), 1)
+	}
+	return NewOffset(o.Offset, children[0]), nil
 }
 
-// TransformExpressionsUp implements the Transformable interface.
-func (o *Offset) TransformExpressionsUp(f func(sql.Expression) sql.Expression) sql.Node {
-	c := o.Child.TransformExpressionsUp(f)
-	return NewOffset(o.n, c)
+func (o Offset) String() string {
+	pr := sql.NewTreePrinter()
+	_ = pr.WriteNode("Offset(%d)", o.Offset)
+	_ = pr.WriteChildren(o.Child.String())
+	return pr.String()
 }
 
 type offsetIter struct {

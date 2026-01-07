@@ -2,6 +2,7 @@ package plan
 
 import (
 	"io"
+	"strings"
 
 	"github.com/geoffreyhinton/go_mysql_server/sql"
 )
@@ -20,32 +21,32 @@ func NewDescribe(child sql.Node) *Describe {
 func (d *Describe) Schema() sql.Schema {
 	return sql.Schema{{
 		Name: "name",
-		Type: sql.Text,
+		Type: sql.LongText,
 	}, {
 		Name: "type",
-		Type: sql.Text,
+		Type: sql.LongText,
 	}}
 }
 
 // RowIter implements the Node interface.
-func (d *Describe) RowIter() (sql.RowIter, error) {
+func (d *Describe) RowIter(ctx *sql.Context) (sql.RowIter, error) {
 	return &describeIter{schema: d.Child.Schema()}, nil
 }
 
-// TransformUp implements the Transformable interface.
-func (d *Describe) TransformUp(f func(sql.Node) sql.Node) sql.Node {
-	c := d.UnaryNode.Child.TransformUp(f)
-	n := NewDescribe(c)
+// WithChildren implements the Node interface.
+func (d *Describe) WithChildren(children ...sql.Node) (sql.Node, error) {
+	if len(children) != 1 {
+		return nil, sql.ErrInvalidChildrenNumber.New(d, len(children), 1)
+	}
 
-	return f(n)
+	return NewDescribe(children[0]), nil
 }
 
-// TransformExpressionsUp implements the Transformable interface.
-func (d *Describe) TransformExpressionsUp(f func(sql.Expression) sql.Expression) sql.Node {
-	c := d.UnaryNode.Child.TransformExpressionsUp(f)
-	n := NewDescribe(c)
-
-	return n
+func (d Describe) String() string {
+	p := sql.NewTreePrinter()
+	_ = p.WriteNode("Describe")
+	_ = p.WriteChildren(d.Child.String())
+	return p.String()
 }
 
 type describeIter struct {
@@ -60,9 +61,57 @@ func (i *describeIter) Next() (sql.Row, error) {
 
 	f := i.schema[i.i]
 	i.i++
-	return sql.NewRow(f.Name, f.Type.Type().String()), nil
+	return sql.NewRow(f.Name, f.Type.String()), nil
 }
 
 func (i *describeIter) Close() error {
 	return nil
+}
+
+// DescribeQuery returns the description of the query plan.
+type DescribeQuery struct {
+	UnaryNode
+	Format string
+}
+
+// DescribeSchema is the schema returned by a DescribeQuery node.
+var DescribeSchema = sql.Schema{
+	{Name: "plan", Type: sql.LongText},
+}
+
+// NewDescribeQuery creates a new DescribeQuery node.
+func NewDescribeQuery(format string, child sql.Node) *DescribeQuery {
+	return &DescribeQuery{UnaryNode{Child: child}, format}
+}
+
+// Schema implements the Node interface.
+func (d *DescribeQuery) Schema() sql.Schema {
+	return DescribeSchema
+}
+
+// RowIter implements the Node interface.
+func (d *DescribeQuery) RowIter(ctx *sql.Context) (sql.RowIter, error) {
+	var rows []sql.Row
+	for _, l := range strings.Split(d.Child.String(), "\n") {
+		if strings.TrimSpace(l) != "" {
+			rows = append(rows, sql.NewRow(l))
+		}
+	}
+	return sql.RowsToRowIter(rows...), nil
+}
+
+func (d *DescribeQuery) String() string {
+	pr := sql.NewTreePrinter()
+	_ = pr.WriteNode("DescribeQuery(format=%s)", d.Format)
+	_ = pr.WriteChildren(d.Child.String())
+	return pr.String()
+}
+
+// WithChildren implements the Node interface.
+func (d *DescribeQuery) WithChildren(children ...sql.Node) (sql.Node, error) {
+	if len(children) != 1 {
+		return nil, sql.ErrInvalidChildrenNumber.New(d, len(children), 1)
+	}
+
+	return NewDescribeQuery(d.Format, children[0]), nil
 }

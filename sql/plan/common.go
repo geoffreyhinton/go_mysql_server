@@ -2,7 +2,25 @@ package plan
 
 import "github.com/geoffreyhinton/go_mysql_server/sql"
 
-// UnaryNode is a node that has only one children.
+// IsUnary returns whether the node is unary or not.
+func IsUnary(node sql.Node) bool {
+	return len(node.Children()) == 1
+}
+
+// IsBinary returns whether the node is binary or not.
+func IsBinary(node sql.Node) bool {
+	return len(node.Children()) == 2
+}
+
+// NillaryNode is a node with no children. This is a common WithChildren implementation for all nodes that have none.
+func NillaryWithChildren(node sql.Node, children ...sql.Node) (sql.Node, error) {
+	if len(children) != 0 {
+		return nil, sql.ErrInvalidChildrenNumber.New(node, len(children), 0)
+	}
+	return node, nil
+}
+
+// UnaryNode is a node that has only one child.
 type UnaryNode struct {
 	Child sql.Node
 }
@@ -46,16 +64,4 @@ func expressionsResolved(exprs ...sql.Expression) bool {
 	}
 
 	return true
-}
-
-func transformExpressionsUp(f func(sql.Expression) sql.Expression,
-	exprs []sql.Expression) []sql.Expression {
-
-	var es []sql.Expression
-	for _, e := range exprs {
-		te := e.TransformUp(f)
-		es = append(es, te)
-	}
-
-	return es
 }

@@ -1,10 +1,9 @@
 package plan
 
 import (
-	"fmt"
+	"io"
 
 	"github.com/geoffreyhinton/go_mysql_server/sql"
-	"github.com/mitchellh/hashstructure"
 )
 
 // Distinct is a node that ensures all rows that come from it are unique.
@@ -25,65 +24,170 @@ func (d *Distinct) Resolved() bool {
 }
 
 // RowIter implements the Node interface.
-func (d *Distinct) RowIter() (sql.RowIter, error) {
-	it, err := d.Child.RowIter()
+func (d *Distinct) RowIter(ctx *sql.Context) (sql.RowIter, error) {
+	span, ctx := ctx.Span("plan.Distinct")
+
+	it, err := d.Child.RowIter(ctx)
 	if err != nil {
+		span.Finish()
 		return nil, err
 	}
-	return newDistinctIter(it), nil
+
+	return sql.NewSpanIter(span, newDistinctIter(ctx, it)), nil
 }
 
-// TransformUp implements the Transformable interface.
-func (d *Distinct) TransformUp(f func(sql.Node) sql.Node) sql.Node {
-	return f(NewDistinct(d.Child.TransformUp(f)))
+// WithChildren implements the Node interface.
+func (d *Distinct) WithChildren(children ...sql.Node) (sql.Node, error) {
+	if len(children) != 1 {
+		return nil, sql.ErrInvalidChildrenNumber.New(d, len(children), 1)
+	}
+
+	return NewDistinct(children[0]), nil
 }
 
-// TransformExpressionsUp implements the Transformable interface.
-func (d *Distinct) TransformExpressionsUp(f func(sql.Expression) sql.Expression) sql.Node {
-	return NewDistinct(d.Child.TransformExpressionsUp(f))
+func (d Distinct) String() string {
+	p := sql.NewTreePrinter()
+	_ = p.WriteNode("Distinct")
+	_ = p.WriteChildren(d.Child.String())
+	return p.String()
 }
 
 // distinctIter keeps track of the hashes of all rows that have been emitted.
 // It does not emit any rows whose hashes have been seen already.
-// TODO: come up with a way to use less memory than keeping all hashes in mem.
+// TODO: come up with a way to use less memory than keeping all hashes in memory.
 // Even though they are just 64-bit integers, this could be a problem in large
 // result sets.
 type distinctIter struct {
-	currentPos int64
-	childIter  sql.RowIter
-	seen       map[uint64]struct{}
+	childIter sql.RowIter
+	seen      sql.KeyValueCache
+	dispose   sql.DisposeFunc
 }
 
-func newDistinctIter(child sql.RowIter) *distinctIter {
+func newDistinctIter(ctx *sql.Context, child sql.RowIter) *distinctIter {
+	cache, dispose := ctx.Memory.NewHistoryCache()
 	return &distinctIter{
-		currentPos: 0,
-		childIter:  child,
-		seen:       make(map[uint64]struct{}),
+		childIter: child,
+		seen:      cache,
+		dispose:   dispose,
 	}
 }
 
 func (di *distinctIter) Next() (sql.Row, error) {
 	for {
-		childRow, err := di.childIter.Next()
-		di.currentPos++
+		row, err := di.childIter.Next()
 		if err != nil {
+			if err == io.EOF {
+				di.Dispose()
+			}
 			return nil, err
 		}
 
-		hash, err := hashstructure.Hash(childRow, nil)
-		if err != nil {
-			return nil, fmt.Errorf("unable to hash row: %s", err)
-		}
-
-		if _, ok := di.seen[hash]; ok {
+		hash := sql.CacheKey(row)
+		if _, err := di.seen.Get(hash); err == nil {
 			continue
 		}
 
-		di.seen[hash] = struct{}{}
-		return childRow, nil
+		if err := di.seen.Put(hash, struct{}{}); err != nil {
+			return nil, err
+		}
+
+		return row, nil
 	}
 }
 
 func (di *distinctIter) Close() error {
+	di.Dispose()
+	return di.childIter.Close()
+}
+
+func (di *distinctIter) Dispose() {
+	if di.dispose != nil {
+		di.dispose()
+	}
+}
+
+// OrderedDistinct is a Distinct node optimized for sorted row sets.
+// It's 2 orders of magnitude faster and uses 2 orders of magnitude less memory.
+type OrderedDistinct struct {
+	UnaryNode
+}
+
+// NewOrderedDistinct creates a new OrderedDistinct node.
+func NewOrderedDistinct(child sql.Node) *OrderedDistinct {
+	return &OrderedDistinct{
+		UnaryNode: UnaryNode{Child: child},
+	}
+}
+
+// Resolved implements the Resolvable interface.
+func (d *OrderedDistinct) Resolved() bool {
+	return d.UnaryNode.Child.Resolved()
+}
+
+// RowIter implements the Node interface.
+func (d *OrderedDistinct) RowIter(ctx *sql.Context) (sql.RowIter, error) {
+	span, ctx := ctx.Span("plan.OrderedDistinct")
+
+	it, err := d.Child.RowIter(ctx)
+	if err != nil {
+		span.Finish()
+		return nil, err
+	}
+
+	return sql.NewSpanIter(span, newOrderedDistinctIter(it, d.Child.Schema())), nil
+}
+
+// WithChildren implements the Node interface.
+func (d *OrderedDistinct) WithChildren(children ...sql.Node) (sql.Node, error) {
+	if len(children) != 1 {
+		return nil, sql.ErrInvalidChildrenNumber.New(d, len(children), 1)
+	}
+
+	return NewOrderedDistinct(children[0]), nil
+}
+
+func (d OrderedDistinct) String() string {
+	p := sql.NewTreePrinter()
+	_ = p.WriteNode("OrderedDistinct")
+	_ = p.WriteChildren(d.Child.String())
+	return p.String()
+}
+
+// orderedDistinctIter iterates the children iterator and skips all the
+// repeated rows assuming the iterator has all rows sorted.
+type orderedDistinctIter struct {
+	childIter sql.RowIter
+	schema    sql.Schema
+	prevRow   sql.Row
+}
+
+func newOrderedDistinctIter(child sql.RowIter, schema sql.Schema) *orderedDistinctIter {
+	return &orderedDistinctIter{childIter: child, schema: schema}
+}
+
+func (di *orderedDistinctIter) Next() (sql.Row, error) {
+	for {
+		row, err := di.childIter.Next()
+		if err != nil {
+			return nil, err
+		}
+
+		if di.prevRow != nil {
+			ok, err := di.prevRow.Equals(row, di.schema)
+			if err != nil {
+				return nil, err
+			}
+
+			if ok {
+				continue
+			}
+		}
+
+		di.prevRow = row
+		return row, nil
+	}
+}
+
+func (di *orderedDistinctIter) Close() error {
 	return di.childIter.Close()
 }

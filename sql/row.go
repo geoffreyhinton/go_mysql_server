@@ -1,6 +1,8 @@
 package sql
 
-import "io"
+import (
+	"io"
+)
 
 // Row is a tuple of values.
 type Row []interface{}
@@ -15,6 +17,26 @@ func NewRow(values ...interface{}) Row {
 // Copy creates a new row with the same values as the current one.
 func (r Row) Copy() Row {
 	return NewRow(r...)
+}
+
+// Equals checks whether two rows are equal given a schema.
+func (r Row) Equals(row Row, schema Schema) (bool, error) {
+	if len(row) != len(r) || len(row) != len(schema) {
+		return false, nil
+	}
+
+	for i, colLeft := range r {
+		colRight := row[i]
+		cmp, err := schema[i].Type.Compare(colLeft, colRight)
+		if err != nil {
+			return false, err
+		}
+		if cmp != 0 {
+			return false, nil
+		}
+	}
+
+	return true, nil
 }
 
 // RowIter is an iterator that produces rows.
@@ -46,8 +68,8 @@ func RowIterToRows(i RowIter) ([]Row, error) {
 }
 
 // NodeToRows converts a node to a slice of rows.
-func NodeToRows(n Node) ([]Row, error) {
-	i, err := n.RowIter()
+func NodeToRows(ctx *Context, n Node) ([]Row, error) {
+	i, err := n.RowIter(ctx)
 	if err != nil {
 		return nil, err
 	}

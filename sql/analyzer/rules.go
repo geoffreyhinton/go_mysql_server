@@ -1,144 +1,75 @@
 package analyzer
 
 import (
-	"github.com/geoffreyhinton/go_mysql_server/sql"
-	"github.com/geoffreyhinton/go_mysql_server/sql/expression"
-	"github.com/geoffreyhinton/go_mysql_server/sql/plan"
+	errors "gopkg.in/src-d/go-errors.v1"
 )
 
 // DefaultRules to apply when analyzing nodes.
 var DefaultRules = []Rule{
-	{"resolve_tables", resolveTables},
+	{"resolve_natural_joins", resolveNaturalJoins},
+	{"resolve_orderby_literals", resolveOrderByLiterals},
+	{"resolve_orderby", resolveOrderBy},
+	{"resolve_grouping_columns", resolveGroupingColumns},
+	{"qualify_columns", qualifyColumns},
 	{"resolve_columns", resolveColumns},
 	{"resolve_database", resolveDatabase},
 	{"resolve_star", resolveStar},
 	{"resolve_functions", resolveFunctions},
+	{"resolve_having", resolveHaving},
+	{"merge_union_schemas", mergeUnionSchemas},
+	{"reorder_aggregations", reorderAggregations},
+	{"reorder_projection", reorderProjection},
+	{"move_join_conds_to_filter", moveJoinConditionsToFilter},
+	{"eval_filter", evalFilter},
+	{"optimize_distinct", optimizeDistinct},
 }
 
-func resolveDatabase(a *Analyzer, n sql.Node) sql.Node {
-	_, ok := n.(*plan.ShowTables)
-	if !ok {
-		return n
-	}
-
-	db, err := a.Catalog.Database(a.CurrentDatabase)
-	if err != nil {
-		return n
-	}
-
-	return plan.NewShowTables(db)
+// OnceBeforeDefault contains the rules to be applied just once before the
+// DefaultRules.
+var OnceBeforeDefault = []Rule{
+	{"resolve_views", resolveViews},
+	{"resolve_subqueries", resolveSubqueries},
+	{"resolve_tables", resolveTables},
+	{"check_aliases", checkAliases},
 }
 
-func resolveTables(a *Analyzer, n sql.Node) sql.Node {
-	return n.TransformUp(func(n sql.Node) sql.Node {
-		t, ok := n.(*plan.UnresolvedTable)
-		if !ok {
-			return n
-		}
-
-		rt, err := a.Catalog.Table(a.CurrentDatabase, t.Name)
-		if err != nil {
-			return n
-		}
-
-		return rt
-	})
+// OnceAfterDefault contains the rules to be applied just once after the
+// DefaultRules.
+var OnceAfterDefault = []Rule{
+	{"resolve_generators", resolveGenerators},
+	{"remove_unnecessary_converts", removeUnnecessaryConverts},
+	{"assign_catalog", assignCatalog},
+	{"prune_columns", pruneColumns},
+	{"convert_dates", convertDates},
+	{"pushdown", pushdown},
+	{"optimize_joins", optimizeJoins},
+	{"erase_projection", eraseProjection},
 }
 
-func resolveStar(a *Analyzer, n sql.Node) sql.Node {
-	return n.TransformUp(func(n sql.Node) sql.Node {
-		if n.Resolved() {
-			return n
-		}
-
-		p, ok := n.(*plan.Project)
-		if !ok {
-			return n
-		}
-
-		if len(p.Expressions) != 1 {
-			return n
-		}
-
-		if _, ok := p.Expressions[0].(*expression.Star); !ok {
-			return n
-		}
-
-		var exprs []sql.Expression
-		for i, e := range p.Child.Schema() {
-			gf := expression.NewGetField(i, e.Type, e.Name, e.Nullable)
-			exprs = append(exprs, gf)
-		}
-
-		return plan.NewProject(exprs, p.Child)
-	})
+// OnceAfterAll contains the rules to be applied just once after all other
+// rules have been applied.
+var OnceAfterAll = []Rule{
+	{"track_process", trackProcess},
+	{"parallelize", parallelize},
+	{"clear_warnings", clearWarnings},
 }
 
-func resolveColumns(a *Analyzer, n sql.Node) sql.Node {
-	return n.TransformUp(func(n sql.Node) sql.Node {
-		if n.Resolved() {
-			return n
-		}
-
-		if len(n.Children()) != 1 {
-			return n
-		}
-
-		child := n.Children()[0]
-		if !child.Resolved() {
-			return n
-		}
-
-		colMap := map[string]*expression.GetField{}
-		for idx, child := range child.Schema() {
-			if _, ok := colMap[child.Name]; ok {
-				// There is no unambiguous resolution
-				return n
-			}
-
-			colMap[child.Name] = expression.NewGetField(idx, child.Type, child.Name, child.Nullable)
-		}
-
-		return n.TransformExpressionsUp(func(e sql.Expression) sql.Expression {
-			uc, ok := e.(*expression.UnresolvedColumn)
-			if !ok {
-				return e
-			}
-
-			gf, ok := colMap[uc.Name()]
-			if !ok {
-				return e
-			}
-
-			return gf
-		})
-	})
-}
-
-func resolveFunctions(a *Analyzer, n sql.Node) sql.Node {
-	return n.TransformUp(func(n sql.Node) sql.Node {
-		if n.Resolved() {
-			return n
-		}
-
-		return n.TransformExpressionsUp(func(e sql.Expression) sql.Expression {
-			uf, ok := e.(*expression.UnresolvedFunction)
-			if !ok {
-				return e
-			}
-
-			n := uf.Name()
-			f, err := a.Catalog.Function(n)
-			if err != nil {
-				return e
-			}
-
-			rf, err := f.Call(uf.Children...)
-			if err != nil {
-				return e
-			}
-
-			return rf
-		})
-	})
-}
+var (
+	// ErrColumnTableNotFound is returned when the column does not exist in a
+	// the table.
+	ErrColumnTableNotFound = errors.NewKind("table %q does not have column %q")
+	// ErrColumnNotFound is returned when the column does not exist in any
+	// table in scope.
+	ErrColumnNotFound = errors.NewKind("column %q could not be found in any table in scope")
+	// ErrAmbiguousColumnName is returned when there is a column reference that
+	// is present in more than one table.
+	ErrAmbiguousColumnName = errors.NewKind("ambiguous column name %q, it's present in all these tables: %v")
+	// ErrFieldMissing is returned when the field is not on the schema.
+	ErrFieldMissing = errors.NewKind("field %q is not on schema")
+	// ErrOrderByColumnIndex is returned when in an order clause there is a
+	// column that is unknown.
+	ErrOrderByColumnIndex = errors.NewKind("unknown column %d in order by clause")
+	// ErrMisusedAlias is returned when a alias is defined and used in the same projection.
+	ErrMisusedAlias = errors.NewKind("column %q does not exist in scope, but there is an alias defined in" +
+		" this projection with that name. Aliases cannot be used in the same projection they're defined in")
+)

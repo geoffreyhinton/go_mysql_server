@@ -1,6 +1,10 @@
 package plan
 
-import "github.com/geoffreyhinton/go_mysql_server/sql"
+import (
+	"fmt"
+
+	"github.com/geoffreyhinton/go_mysql_server/sql"
+)
 
 // Values represents a set of tuples of expressions.
 type Values struct {
@@ -21,8 +25,14 @@ func (p *Values) Schema() sql.Schema {
 	exprs := p.ExpressionTuples[0]
 	s := make(sql.Schema, len(exprs))
 	for i, e := range exprs {
+		var name string
+		if n, ok := e.(sql.Nameable); ok {
+			name = n.Name()
+		} else {
+			name = e.String()
+		}
 		s[i] = &sql.Column{
-			Name:     e.Name(),
+			Name:     name,
 			Type:     e.Type(),
 			Nullable: e.IsNullable(),
 		}
@@ -48,13 +58,13 @@ func (p *Values) Resolved() bool {
 }
 
 // RowIter implements the Node interface.
-func (p *Values) RowIter() (sql.RowIter, error) {
+func (p *Values) RowIter(ctx *sql.Context) (sql.RowIter, error) {
 	rows := make([]sql.Row, len(p.ExpressionTuples))
 	for i, et := range p.ExpressionTuples {
 		vals := make([]interface{}, len(et))
 		for j, e := range et {
 			var err error
-			vals[j], err = e.Eval(nil)
+			vals[j], err = e.Eval(ctx, nil)
 			if err != nil {
 				return nil, err
 			}
@@ -66,17 +76,47 @@ func (p *Values) RowIter() (sql.RowIter, error) {
 	return sql.RowsToRowIter(rows...), nil
 }
 
-// TransformUp implements the Transformable interface.
-func (p *Values) TransformUp(f func(sql.Node) sql.Node) sql.Node {
-	return f(p)
+func (p *Values) String() string {
+	return fmt.Sprintf("Values(%d tuples)", len(p.ExpressionTuples))
 }
 
-// TransformExpressionsUp implements the Transformable interface.
-func (p *Values) TransformExpressionsUp(f func(sql.Expression) sql.Expression) sql.Node {
-	ets := make([][]sql.Expression, len(p.ExpressionTuples))
-	for i, et := range p.ExpressionTuples {
-		ets[i] = transformExpressionsUp(f, et)
+// Expressions implements the Expressioner interface.
+func (p *Values) Expressions() []sql.Expression {
+	var exprs []sql.Expression
+	for _, tuple := range p.ExpressionTuples {
+		exprs = append(exprs, tuple...)
+	}
+	return exprs
+}
+
+// WithChildren implements the Node interface.
+func (p *Values) WithChildren(children ...sql.Node) (sql.Node, error) {
+	if len(children) != 0 {
+		return nil, sql.ErrInvalidChildrenNumber.New(p, len(children), 0)
 	}
 
-	return NewValues(ets)
+	return p, nil
+}
+
+// WithExpressions implements the Expressioner interface.
+func (p *Values) WithExpressions(exprs ...sql.Expression) (sql.Node, error) {
+	var expected int
+	for _, t := range p.ExpressionTuples {
+		expected += len(t)
+	}
+
+	if len(exprs) != expected {
+		return nil, sql.ErrInvalidChildrenNumber.New(p, len(exprs), expected)
+	}
+
+	var offset int
+	var tuples = make([][]sql.Expression, len(p.ExpressionTuples))
+	for i, t := range p.ExpressionTuples {
+		for range t {
+			tuples[i] = append(tuples[i], exprs[offset])
+			offset++
+		}
+	}
+
+	return NewValues(tuples), nil
 }

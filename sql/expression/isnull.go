@@ -23,8 +23,8 @@ func (e *IsNull) IsNullable() bool {
 }
 
 // Eval implements the Expression interface.
-func (e *IsNull) Eval(row sql.Row) (interface{}, error) {
-	v, err := e.Child.Eval(row)
+func (e *IsNull) Eval(ctx *sql.Context, row sql.Row) (interface{}, error) {
+	v, err := e.Child.Eval(ctx, row)
 	if err != nil {
 		return nil, err
 	}
@@ -32,15 +32,14 @@ func (e *IsNull) Eval(row sql.Row) (interface{}, error) {
 	return v == nil, nil
 }
 
-// Name implements the Expression interface.
-func (e *IsNull) Name() string {
-	return "IsNull(" + e.Child.Name() + ")"
+func (e IsNull) String() string {
+	return e.Child.String() + " IS NULL"
 }
 
-// TransformUp implements the Expression interface.
-func (e *IsNull) TransformUp(f func(sql.Expression) sql.Expression) sql.Expression {
-	c := e.UnaryExpression.Child.TransformUp(f)
-	n := &IsNull{UnaryExpression{c}}
-
-	return f(n)
+// WithChildren implements the Expression interface.
+func (e *IsNull) WithChildren(children ...sql.Expression) (sql.Expression, error) {
+	if len(children) != 1 {
+		return nil, sql.ErrInvalidChildrenNumber.New(e, len(children), 1)
+	}
+	return NewIsNull(children[0]), nil
 }
