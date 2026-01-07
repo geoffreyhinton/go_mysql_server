@@ -50,7 +50,7 @@ func resolveViews(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
 						}
 
 						if t.AsOf != nil {
-							a.Log("applying AS OF clause to view " + t2.Name())
+							a.Log("%s", "applying AS OF clause to view "+t2.Name())
 							if t2.AsOf != nil {
 								return nil, sql.ErrIncompatibleAsOf.New(
 									fmt.Sprintf("cannot combine AS OF clauses %s and %s",
@@ -60,7 +60,7 @@ func resolveViews(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
 						}
 
 						if t.Database != "" {
-							a.Log("applying database clause to view " + t2.Name())
+							a.Log("%s", "applying database clause to view "+t2.Name())
 							if t2.Database == "" {
 								t2, _ = t2.WithDatabase(db)
 							}
