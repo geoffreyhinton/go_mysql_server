@@ -68,3 +68,34 @@ func TestMinusInterval(t *testing.T) {
 	require.NoError(err)
 	require.Equal(expected, result)
 }
+
+func TestMult(t *testing.T) {
+	var testCases = []struct {
+		name        string
+		left, right float64
+		expected    float64
+	}{
+		{"1 * 1", 1, 1, 1},
+		{"-1 * 1", -1, 1, -1},
+		{"0 * 0", 0, 0, 0},
+		{"3.14159 * 3.0", 3.14159, 3.0, float64(3.14159) * float64(3.0)},
+	}
+
+	for _, tt := range testCases {
+		t.Run(tt.name, func(t *testing.T) {
+			require := require.New(t)
+			result, err := NewMult(
+				NewLiteral(tt.left, sql.Float64),
+				NewLiteral(tt.right, sql.Float64),
+			).Eval(sql.NewEmptyContext(), sql.NewRow())
+			require.NoError(err)
+			require.Equal(tt.expected, result)
+		})
+	}
+
+	require := require.New(t)
+	result, err := NewMult(NewLiteral("10", sql.LongText), NewLiteral("10", sql.LongText)).
+		Eval(sql.NewEmptyContext(), sql.NewRow())
+	require.NoError(err)
+	require.Equal(float64(100), result)
+}
