@@ -1,9 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"time"
 
-	sqle "github.com/geoffreyhinton/go_mysql_server/"
+	sqle "github.com/geoffreyhinton/go_mysql_server"
 	"github.com/geoffreyhinton/go_mysql_server/auth"
 	"github.com/geoffreyhinton/go_mysql_server/memory"
 	"github.com/geoffreyhinton/go_mysql_server/server"
@@ -58,6 +59,7 @@ func createTestDatabase() *memory.Database {
 
 	db.AddTable(tableName, table)
 	ctx := sql.NewEmptyContext()
+	fmt.Println("Inserting...")
 	table.Insert(ctx, sql.NewRow("John Doe", "john@doe.com", []string{"555-555-555"}, time.Now()))
 	table.Insert(ctx, sql.NewRow("John Doe", "johnalt@doe.com", []string{}, time.Now()))
 	table.Insert(ctx, sql.NewRow("Jane Doe", "jane@doe.com", []string{}, time.Now()))

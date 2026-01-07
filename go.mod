@@ -18,22 +18,19 @@ require (
 	go.etcd.io/bbolt v1.4.3
 	gopkg.in/src-d/go-errors.v1 v1.0.0
 	gopkg.in/yaml.v2 v2.4.0
-	vitess.io/vitess v0.23.0
+	vitess.io/vitess v3.0.0-rc.3.0.20190602171040-12bfde34629c+incompatible
 )
 
+replace vitess.io/vitess => github.com/liquidata-inc/vitess v0.0.0-20200409031153-c8abced3b7b4
+
 require (
-	github.com/AdaLogics/go-fuzz-headers v0.0.0-20240806141605-e8a1dd7889d6 // indirect
 	github.com/cespare/xxhash v1.1.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
-	github.com/klauspost/compress v1.18.0 // indirect
-	github.com/pires/go-proxyproto v0.8.1 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	github.com/planetscale/vtprotobuf v0.6.1-0.20250313105119-ba97887b0a25 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/satori/go.uuid v1.2.0 // indirect
-	github.com/spf13/pflag v1.0.10 // indirect
 	golang.org/x/net v0.48.0 // indirect
 	golang.org/x/sync v0.18.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect
