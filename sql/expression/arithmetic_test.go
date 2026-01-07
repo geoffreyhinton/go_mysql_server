@@ -58,3 +58,13 @@ func TestPlusInterval(t *testing.T) {
 	require.NoError(err)
 	require.Equal(expected, result)
 }
+
+func TestMinusInterval(t *testing.T) {
+	require := require.New(t)
+	expected := time.Date(2018, time.May, 1, 0, 0, 0, 0, time.UTC)
+	op := NewMinus(NewLiteral("2018-05-02", sql.LongText),
+		NewInterval(NewLiteral(int64(1), sql.Int64), "DAY"))
+	result, err := op.Eval(sql.NewEmptyContext(), nil)
+	require.NoError(err)
+	require.Equal(expected, result)
+}
