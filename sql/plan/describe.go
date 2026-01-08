@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package plan
 
 import (
@@ -29,7 +43,7 @@ func (d *Describe) Schema() sql.Schema {
 }
 
 // RowIter implements the Node interface.
-func (d *Describe) RowIter(ctx *sql.Context) (sql.RowIter, error) {
+func (d *Describe) RowIter(ctx *sql.Context, row sql.Row) (sql.RowIter, error) {
 	return &describeIter{schema: d.Child.Schema()}, nil
 }
 
@@ -90,7 +104,7 @@ func (d *DescribeQuery) Schema() sql.Schema {
 }
 
 // RowIter implements the Node interface.
-func (d *DescribeQuery) RowIter(ctx *sql.Context) (sql.RowIter, error) {
+func (d *DescribeQuery) RowIter(ctx *sql.Context, row sql.Row) (sql.RowIter, error) {
 	var rows []sql.Row
 	for _, l := range strings.Split(d.Child.String(), "\n") {
 		if strings.TrimSpace(l) != "" {
@@ -104,6 +118,13 @@ func (d *DescribeQuery) String() string {
 	pr := sql.NewTreePrinter()
 	_ = pr.WriteNode("DescribeQuery(format=%s)", d.Format)
 	_ = pr.WriteChildren(d.Child.String())
+	return pr.String()
+}
+
+func (d *DescribeQuery) DebugString() string {
+	pr := sql.NewTreePrinter()
+	_ = pr.WriteNode("DescribeQuery(format=%s)", d.Format)
+	_ = pr.WriteChildren(sql.DebugString(d.Child))
 	return pr.String()
 }
 

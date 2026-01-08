@@ -3,7 +3,9 @@ module github.com/geoffreyhinton/go_mysql_server
 go 1.25.3
 
 require (
+	github.com/dolthub/vitess v0.0.0-20201204232015-9e3805156304
 	github.com/go-kit/kit v0.13.0
+	github.com/go-sql-driver/mysql v1.9.3
 	github.com/golang/glog v1.2.5
 	github.com/hashicorp/golang-lru v1.0.2
 	github.com/mitchellh/hashstructure v1.1.0
@@ -18,18 +20,18 @@ require (
 	go.etcd.io/bbolt v1.4.3
 	gopkg.in/src-d/go-errors.v1 v1.0.0
 	gopkg.in/yaml.v2 v2.4.0
-	vitess.io/vitess v3.0.0-rc.3.0.20190602171040-12bfde34629c+incompatible
 )
 
-replace vitess.io/vitess => github.com/liquidata-inc/vitess v0.0.0-20200409031153-c8abced3b7b4
-
 require (
+	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/cespare/xxhash v1.1.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
+	github.com/lestrrat-go/strftime v1.1.1 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
+	github.com/sanity-io/litter v1.5.8 // indirect
 	github.com/satori/go.uuid v1.2.0 // indirect
 	golang.org/x/net v0.48.0 // indirect
 	golang.org/x/sync v0.18.0 // indirect

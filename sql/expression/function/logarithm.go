@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package function
 
 import (
@@ -5,9 +19,10 @@ import (
 	"math"
 	"reflect"
 
+	"gopkg.in/src-d/go-errors.v1"
+
 	"github.com/geoffreyhinton/go_mysql_server/sql"
 	"github.com/geoffreyhinton/go_mysql_server/sql/expression"
-	errors "gopkg.in/src-d/go-errors.v1"
 )
 
 // ErrInvalidArgumentForLogarithm is returned when an invalid argument value is passed to a
@@ -27,9 +42,25 @@ type LogBase struct {
 	base float64
 }
 
+var _ sql.FunctionExpression = (*LogBase)(nil)
+
 // NewLogBase creates a new LogBase expression.
 func NewLogBase(base float64, e sql.Expression) sql.Expression {
 	return &LogBase{UnaryExpression: expression.UnaryExpression{Child: e}, base: base}
+}
+
+// FunctionName implements sql.FunctionExpression
+func (l *LogBase) FunctionName() string {
+	switch l.base {
+	case float64(math.E):
+		return "ln"
+	case float64(10):
+		return "log10"
+	case float64(2):
+		return "log2"
+	default:
+		return "log"
+	}
 }
 
 func (l *LogBase) String() string {
@@ -89,6 +120,8 @@ type Log struct {
 	expression.BinaryExpression
 }
 
+var _ sql.FunctionExpression = (*Log)(nil)
+
 // NewLog creates a new Log expression.
 func NewLog(args ...sql.Expression) (sql.Expression, error) {
 	argLen := len(args)
@@ -101,6 +134,11 @@ func NewLog(args ...sql.Expression) (sql.Expression, error) {
 	} else {
 		return &Log{expression.BinaryExpression{Left: args[0], Right: args[1]}}, nil
 	}
+}
+
+// FunctionName implements sql.FunctionExpression
+func (l *Log) FunctionName() string {
+	return "log"
 }
 
 func (l *Log) String() string {

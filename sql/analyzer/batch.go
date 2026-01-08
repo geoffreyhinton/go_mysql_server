@@ -1,13 +1,28 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package analyzer
 
 import (
 	"reflect"
+	"strconv"
 
 	"github.com/geoffreyhinton/go_mysql_server/sql"
 )
 
 // RuleFunc is the function to be applied in a rule.
-type RuleFunc func(*sql.Context, *Analyzer, sql.Node) (sql.Node, error)
+type RuleFunc func(*sql.Context, *Analyzer, sql.Node, *Scope) (sql.Node, error)
 
 // Rule to transform nodes.
 type Rule struct {
@@ -26,18 +41,20 @@ type Batch struct {
 	Rules      []Rule
 }
 
-// Eval executes the actual rules the specified number of times on the Batch.
-// If max number of iterations is reached, this method will return the actual
-// processed Node and ErrMaxAnalysisIters error.
-func (b *Batch) Eval(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
+// Eval executes the rules of the batch. On any error, the partially transformed node is returned along with the error.
+// If the batch's max number of iterations is reached without achieving stabilization (batch evaluation no longer
+// changes the node), then this method returns ErrMaxAnalysisIters.
+func (b *Batch) Eval(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
 	if b.Iterations == 0 {
 		return n, nil
 	}
 
 	prev := n
-	cur, err := b.evalOnce(ctx, a, n)
+	a.PushDebugContext("0")
+	cur, err := b.evalOnce(ctx, a, n, scope)
+	a.PopDebugContext()
 	if err != nil {
-		return nil, err
+		return cur, err
 	}
 
 	if b.Iterations == 1 {
@@ -45,32 +62,49 @@ func (b *Batch) Eval(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error
 	}
 
 	for i := 1; !nodesEqual(prev, cur); {
-		prev = cur
-		cur, err = b.evalOnce(ctx, a, cur)
-		if err != nil {
-			return nil, err
-		}
-
-		i++
 		if i >= b.Iterations {
 			return cur, ErrMaxAnalysisIters.New(b.Iterations)
 		}
+
+		prev = cur
+		a.PushDebugContext(strconv.Itoa(i))
+		cur, err = b.evalOnce(ctx, a, cur, scope)
+		a.PopDebugContext()
+		if err != nil {
+			return cur, err
+		}
+
+		i++
 	}
 
 	return cur, nil
 }
 
-func (b *Batch) evalOnce(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
-	result := n
+// evalOnce returns the result of evaluating a batch of rules on the node given. In the result of an error, the result
+// of the last successful transformation is returned along with the error. If no transformation was successful, the
+// input node is returned as-is.
+func (b *Batch) evalOnce(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
+	prev := n
 	for _, rule := range b.Rules {
 		var err error
-		result, err = rule.Apply(ctx, a, result)
+		a.Log("Evaluating rule %s", rule.Name)
+		a.PushDebugContext(rule.Name)
+		next, err := rule.Apply(ctx, a, prev, scope)
+		if next != nil {
+			a.LogDiff(prev, next)
+			prev = next
+			a.LogNode(prev)
+		}
+		a.PopDebugContext()
 		if err != nil {
-			return nil, err
+			// Returning the last node before the error is important. This is non-idiomatic, but in the case of partial
+			// resolution before an error we want the last successful transformation result. Very important for resolving
+			// subqueries.
+			return prev, err
 		}
 	}
 
-	return result, nil
+	return prev, nil
 }
 
 func nodesEqual(a, b sql.Node) bool {
@@ -83,4 +117,8 @@ func nodesEqual(a, b sql.Node) bool {
 	}
 
 	return reflect.DeepEqual(a, b)
+}
+
+type equaler interface {
+	Equal(sql.Node) bool
 }

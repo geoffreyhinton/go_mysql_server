@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package function
 
 import (
@@ -14,12 +28,19 @@ type Split struct {
 	expression.BinaryExpression
 }
 
+var _ sql.FunctionExpression = (*Split)(nil)
+
 // NewSplit creates a new Split UDF.
 func NewSplit(str, delimiter sql.Expression) sql.Expression {
 	return &Split{expression.BinaryExpression{
 		Left:  str,
 		Right: delimiter,
 	}}
+}
+
+// FunctionName implements sql.FunctionExpression
+func (f *Split) FunctionName() string {
+	return "split"
 }
 
 // Eval implements the Expression interface.

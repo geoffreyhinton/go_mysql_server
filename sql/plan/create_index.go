@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package plan
 
 import (
@@ -5,12 +19,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/geoffreyhinton/go_mysql_server/sql"
-	"github.com/geoffreyhinton/go_mysql_server/sql/expression"
 	opentracing "github.com/opentracing/opentracing-go"
 	otlog "github.com/opentracing/opentracing-go/log"
 	"github.com/sirupsen/logrus"
 	errors "gopkg.in/src-d/go-errors.v1"
+
+	"github.com/geoffreyhinton/go_mysql_server/sql"
+	"github.com/geoffreyhinton/go_mysql_server/sql/expression"
 )
 
 var (
@@ -34,7 +49,6 @@ type CreateIndex struct {
 	Config          map[string]string
 	Catalog         *sql.Catalog
 	CurrentDatabase string
-	Async           bool
 }
 
 // NewCreateIndex creates a new CreateIndex node.
@@ -45,14 +59,12 @@ func NewCreateIndex(
 	driver string,
 	config map[string]string,
 ) *CreateIndex {
-	async, ok := config["async"]
 	return &CreateIndex{
 		Name:   name,
 		Table:  table,
 		Exprs:  exprs,
 		Driver: driver,
 		Config: config,
-		Async:  async != "false" || !ok,
 	}
 }
 
@@ -74,9 +86,9 @@ func (c *CreateIndex) Resolved() bool {
 	return true
 }
 
-func getIndexableTable(t sql.Table) (sql.IndexableTable, error) {
+func getIndexableTable(t sql.Table) (sql.DriverIndexableTable, error) {
 	switch t := t.(type) {
-	case sql.IndexableTable:
+	case sql.DriverIndexableTable:
 		return t, nil
 	case sql.TableWrapper:
 		return getIndexableTable(t.Underlying())
@@ -97,7 +109,7 @@ func getChecksumable(t sql.Table) sql.Checksumable {
 }
 
 // RowIter implements the Node interface.
-func (c *CreateIndex) RowIter(ctx *sql.Context) (sql.RowIter, error) {
+func (c *CreateIndex) RowIter(ctx *sql.Context, row sql.Row) (sql.RowIter, error) {
 	table, ok := c.Table.(*ResolvedTable)
 	if !ok {
 		return nil, ErrNotIndexable.New()
@@ -119,7 +131,7 @@ func (c *CreateIndex) RowIter(ctx *sql.Context) (sql.RowIter, error) {
 		return nil, ErrInvalidIndexDriver.New(c.Driver)
 	}
 
-	columns, exprs, err := getColumnsAndPrepareExpressions(c.Exprs)
+	columns, exprs, err := GetColumnsAndPrepareExpressions(c.Exprs)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +165,7 @@ func (c *CreateIndex) RowIter(ctx *sql.Context) (sql.RowIter, error) {
 		return nil, err
 	}
 
-	iter = &evalPartitionKeyValueIter{
+	iter = &EvalPartitionKeyValueIter{
 		ctx:     ctx,
 		columns: columns,
 		exprs:   exprs,
@@ -175,13 +187,9 @@ func (c *CreateIndex) RowIter(ctx *sql.Context) (sql.RowIter, error) {
 		c.Catalog.ProcessList.Done(ctx.Pid())
 	}
 
-	log.WithField("async", c.Async).Info("starting to save the index")
+	log.Info("starting to save the index")
 
-	if c.Async {
-		go createIndex()
-	} else {
-		createIndex()
-	}
+	createIndex()
 
 	return sql.RowsToRowIter(), nil
 }
@@ -190,7 +198,7 @@ func (c *CreateIndex) createIndex(
 	ctx *sql.Context,
 	log *logrus.Entry,
 	driver sql.IndexDriver,
-	index sql.Index,
+	index sql.DriverIndex,
 	iter sql.PartitionIndexKeyValueIter,
 	done chan<- struct{},
 	ready <-chan struct{},
@@ -282,15 +290,10 @@ func (c *CreateIndex) WithChildren(children ...sql.Node) (sql.Node, error) {
 	return &nc, nil
 }
 
-// IsAsync implements the AsyncNode interface.
-func (c *CreateIndex) IsAsync() bool {
-	return c.Async
-}
-
-// getColumnsAndPrepareExpressions extracts the unique columns required by all
+// GetColumnsAndPrepareExpressions extracts the unique columns required by all
 // those expressions and fixes the indexes of the GetFields in the expressions
 // to match a row with only the returned columns in that same order.
-func getColumnsAndPrepareExpressions(
+func GetColumnsAndPrepareExpressions(
 	exprs []sql.Expression,
 ) ([]string, []sql.Expression, error) {
 	var columns []string
@@ -332,14 +335,23 @@ func getColumnsAndPrepareExpressions(
 	return columns, expressions, nil
 }
 
-type evalPartitionKeyValueIter struct {
+type EvalPartitionKeyValueIter struct {
 	iter    sql.PartitionIndexKeyValueIter
 	columns []string
 	exprs   []sql.Expression
 	ctx     *sql.Context
 }
 
-func (i *evalPartitionKeyValueIter) Next() (sql.Partition, sql.IndexKeyValueIter, error) {
+func NewEvalPartitionKeyValueIter(ctx *sql.Context, iter sql.PartitionIndexKeyValueIter, columns []string, exprs []sql.Expression) *EvalPartitionKeyValueIter {
+	return &EvalPartitionKeyValueIter{
+		ctx:     ctx,
+		iter:    iter,
+		columns: columns,
+		exprs:   exprs,
+	}
+}
+
+func (i *EvalPartitionKeyValueIter) Next() (sql.Partition, sql.IndexKeyValueIter, error) {
 	p, iter, err := i.iter.Next()
 	if err != nil {
 		return nil, nil, err
@@ -353,7 +365,7 @@ func (i *evalPartitionKeyValueIter) Next() (sql.Partition, sql.IndexKeyValueIter
 	}, nil
 }
 
-func (i *evalPartitionKeyValueIter) Close() error {
+func (i *EvalPartitionKeyValueIter) Close() error {
 	return i.iter.Close()
 }
 

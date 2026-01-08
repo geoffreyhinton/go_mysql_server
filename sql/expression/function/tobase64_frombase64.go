@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package function
 
 import (
@@ -16,9 +30,16 @@ type ToBase64 struct {
 	expression.UnaryExpression
 }
 
+var _ sql.FunctionExpression = (*ToBase64)(nil)
+
 // NewToBase64 creates a new ToBase64 expression.
 func NewToBase64(e sql.Expression) sql.Expression {
 	return &ToBase64{expression.UnaryExpression{Child: e}}
+}
+
+// FunctionName implements sql.FunctionExpression
+func (t *ToBase64) FunctionName() string {
+	return "to_base64"
 }
 
 // Eval implements the Expression interface.
@@ -62,7 +83,7 @@ func (t *ToBase64) Eval(ctx *sql.Context, row sql.Row) (interface{}, error) {
 	return out.String(), nil
 }
 
-// String implements the Stringer interface.
+// String implements the fmt.Stringer interface.
 func (t *ToBase64) String() string {
 	return fmt.Sprintf("TO_BASE64(%s)", t.Child)
 }
@@ -91,9 +112,16 @@ type FromBase64 struct {
 	expression.UnaryExpression
 }
 
+var _ sql.FunctionExpression = (*FromBase64)(nil)
+
 // NewFromBase64 creates a new FromBase64 expression.
 func NewFromBase64(e sql.Expression) sql.Expression {
 	return &FromBase64{expression.UnaryExpression{Child: e}}
+}
+
+// FunctionName implements sql.FunctionExpression
+func (t *FromBase64) FunctionName() string {
+	return "from_base64"
 }
 
 // Eval implements the Expression interface.
@@ -121,7 +149,7 @@ func (t *FromBase64) Eval(ctx *sql.Context, row sql.Row) (interface{}, error) {
 	return string(decoded), nil
 }
 
-// String implements the Stringer interface.
+// String implements the fmt.Stringer interface.
 func (t *FromBase64) String() string {
 	return fmt.Sprintf("FROM_BASE64(%s)", t.Child)
 }

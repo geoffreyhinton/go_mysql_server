@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package sql
 
 import "reflect"
@@ -11,8 +25,10 @@ type Column struct {
 	Name string
 	// Type is the data type of the column.
 	Type Type
-	// Default contains the default value of the column or nil if it is NULL.
-	Default interface{}
+	// Default contains the default value of the column or nil if it was not explicitly defined. A nil instance is valid, thus calls do not error.
+	Default *ColumnDefaultValue
+	// AutoIncrement is true if the column auto-increments.
+	AutoIncrement bool
 	// Nullable is true if the column can contain NULL values, or false
 	// otherwise.
 	Nullable bool
@@ -20,8 +36,10 @@ type Column struct {
 	Source string
 	// PrimaryKey is true if the column is part of the primary key for its table.
 	PrimaryKey bool
-	// Comment contains the string comment for this column
+	// Comment contains the string comment for this column.
 	Comment string
+	// Extra contains any additional information to put in the `extra` column under `information_schema.columns`.
+	Extra string
 }
 
 // Check ensures the value is correct for this column.

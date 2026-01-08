@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package function
 
 import (
@@ -5,8 +19,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/geoffreyhinton/go_mysql_server/sql"
 	"github.com/oliveagle/jsonpath"
+
+	"github.com/geoffreyhinton/go_mysql_server/sql"
 )
 
 // JSONExtract extracts data from a json document using json paths.
@@ -15,6 +30,8 @@ type JSONExtract struct {
 	Paths []sql.Expression
 }
 
+var _ sql.FunctionExpression = (*JSONExtract)(nil)
+
 // NewJSONExtract creates a new JSONExtract UDF.
 func NewJSONExtract(args ...sql.Expression) (sql.Expression, error) {
 	if len(args) < 2 {
@@ -22,6 +39,11 @@ func NewJSONExtract(args ...sql.Expression) (sql.Expression, error) {
 	}
 
 	return &JSONExtract{args[0], args[1:]}, nil
+}
+
+// FunctionName implements sql.FunctionExpression
+func (j *JSONExtract) FunctionName() string {
+	return "json_extract"
 }
 
 // Resolved implements the sql.Expression interface.

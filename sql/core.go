@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package sql
 
 import (
@@ -7,36 +21,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	errors "gopkg.in/src-d/go-errors.v1"
-)
-
-var (
-	// ErrInvalidType is thrown when there is an unexpected type at some part of
-	// the execution tree.
-	ErrInvalidType = errors.NewKind("invalid type: %s")
-
-	// ErrTableAlreadyExists is thrown when someone tries to create a
-	// table with a name of an existing one
-	ErrTableAlreadyExists = errors.NewKind("table with name %s already exists")
-
-	// ErrTableNotFound is returned when the table is not available from the
-	// current scope.
-	ErrTableNotFound = errors.NewKind("table not found: %s")
-
-	//ErrUnexpectedRowLength is thrown when the obtained row has more columns than the schema
-	ErrUnexpectedRowLength = errors.NewKind("expected %d values, got %d")
-
-	// ErrInvalidChildrenNumber is returned when the WithChildren method of a
-	// node or expression is called with an invalid number of arguments.
-	ErrInvalidChildrenNumber = errors.NewKind("%T: invalid children number, got %d, expected %d")
-
-	// ErrInvalidChildType is returned when the WithChildren method of a
-	// node or expression is called with an invalid child type. This error is indicative of a bug.
-	ErrInvalidChildType = errors.NewKind("%T: invalid child type, got %T, expected %T")
-
-	// ErrDeleteRowNotFound
-	ErrDeleteRowNotFound = errors.NewKind("row was not found when attempting to delete").New()
 )
 
 // Nameable is something that has a name.
@@ -74,14 +58,29 @@ type Expression interface {
 	// IsNullable returns whether the expression can be null.
 	IsNullable() bool
 	// Eval evaluates the given row and returns a result.
-	Eval(*Context, Row) (interface{}, error)
+	Eval(ctx *Context, row Row) (interface{}, error)
 	// Children returns the children expressions of this expression.
 	Children() []Expression
 	// WithChildren returns a copy of the expression with children replaced.
 	// It will return an error if the number of children is different than
 	// the current number of children. They must be given in the same order
 	// as they are returned by Children.
-	WithChildren(...Expression) (Expression, error)
+	WithChildren(children ...Expression) (Expression, error)
+}
+
+// FunctionExpression is an Expression that represents a function.
+type FunctionExpression interface {
+	Expression
+	FunctionName() string
+}
+
+// NonDeterministicExpression allows a way for expressions to declare that they are non-deterministic, which will
+// signal the engine to not cache their results when this would otherwise appear to be safe.
+type NonDeterministicExpression interface {
+	Expression
+	// IsNonDeterministic returns whether this expression returns a non-deterministic result. An expression is
+	// non-deterministic if it can return different results on subsequent evaluations.
+	IsNonDeterministic() bool
 }
 
 // Aggregation implements an aggregation expression, where an
@@ -108,13 +107,39 @@ type Node interface {
 	Schema() Schema
 	// Children nodes.
 	Children() []Node
-	// RowIter produces a row iterator from this node.
-	RowIter(*Context) (RowIter, error)
+	// RowIter produces a row iterator from this node. The current row being evaluated is provided, as well the context
+	// of the query.
+	RowIter(ctx *Context, row Row) (RowIter, error)
 	// WithChildren returns a copy of the node with children replaced.
 	// It will return an error if the number of children is different than
 	// the current number of children. They must be given in the same order
 	// as they are returned by Children.
 	WithChildren(...Node) (Node, error)
+}
+
+// CommentedNode allows comments to be set and retrieved on it
+type CommentedNode interface {
+	Node
+	WithComment(string) Node
+	Comment() string
+}
+
+// DebugStringer is shared by implementors of Node and Expression, and is used for debugging the analyzer. It allows
+// a node or expression to be printed in greater detail than its default String() representation.
+type DebugStringer interface {
+	// DebugString prints a debug string of the node in question.
+	DebugString() string
+}
+
+// DebugString returns a debug string for the Node or Expression given.
+func DebugString(nodeOrExpression interface{}) string {
+	if ds, ok := nodeOrExpression.(DebugStringer); ok {
+		return ds.DebugString()
+	}
+	if s, ok := nodeOrExpression.(fmt.Stringer); ok {
+		return s.String()
+	}
+	panic(fmt.Sprintf("Expected sql.DebugString or fmt.Stringer for %T", nodeOrExpression))
 }
 
 // OpaqueNode is a node that doesn't allow transformations to its children and
@@ -171,6 +196,16 @@ type Table interface {
 	PartitionRows(*Context, Partition) (RowIter, error)
 }
 
+// ForeignKeyConstraint declares a constraint between the columns of two tables.
+type ForeignKeyConstraint struct {
+	Name              string
+	Columns           []string
+	ReferencedTable   string
+	ReferencedColumns []string
+	OnUpdate          ForeignKeyReferenceOption
+	OnDelete          ForeignKeyReferenceOption
+}
+
 // TableWrapper is a node that wraps the real table. This is needed because
 // wrappers cannot implement some methods the table may implement.
 type TableWrapper interface {
@@ -190,7 +225,6 @@ type FilteredTable interface {
 	Table
 	HandledFilters(filters []Expression) []Expression
 	WithFilters(filters []Expression) Table
-	Filters() []Expression
 }
 
 // ProjectedTable is a table that can produce a specific RowIter
@@ -198,20 +232,107 @@ type FilteredTable interface {
 type ProjectedTable interface {
 	Table
 	WithProjection(colNames []string) Table
-	Projection() []string
 }
 
-// IndexableTable represents a table that supports being indexed and
-// receiving indexes to be able to speed up its execution.
-type IndexableTable interface {
+// StatisticsTable is a table that can provide information about its number of rows and other facts to improve query
+// planning performance.
+type StatisticsTable interface {
 	Table
+	// NumRows returns the unfiltered count of rows contained in the table
+	NumRows(*Context) (uint64, error)
+}
+
+// IndexUsing is the desired storage type.
+type IndexUsing byte
+
+const (
+	IndexUsing_Default IndexUsing = iota
+	IndexUsing_BTree
+	IndexUsing_Hash
+)
+
+// IndexConstraint represents any constraints that should be applied to the index.
+type IndexConstraint byte
+
+const (
+	IndexConstraint_None IndexConstraint = iota
+	IndexConstraint_Unique
+	IndexConstraint_Fulltext
+	IndexConstraint_Spatial
+)
+
+// IndexColumn is the column by which to add to an index.
+type IndexColumn struct {
+	Name string
+	// Length represents the index prefix length. If zero, then no length was specified.
+	Length int64
+}
+
+// IndexedTable represents a table that has one or more native indexes on its columns, and can use those indexes to
+// speed up execution of queries that reference those columns. Unlike DriverIndexableTable, IndexedTable doesn't need a
+// separate index driver to function.
+type IndexedTable interface {
+	IndexAddressableTable
+	// GetIndexes returns all indexes on this table.
+	GetIndexes(ctx *Context) ([]Index, error)
+}
+
+// IndexAddressableTable is a table that can restrict its row iteration to only the rows that match a given index
+// lookup.
+type IndexAddressableTable interface {
+	Table
+	// WithIndexLookup returns a version of the table that will return only the rows specified by the given IndexLookup,
+	// which was in turn created by a call to Index.Get() for a set of keys for this table.
 	WithIndexLookup(IndexLookup) Table
-	IndexLookup() IndexLookup
-	IndexKeyValues(*Context, []string) (PartitionIndexKeyValueIter, error)
+}
+
+// IndexAlterableTable represents a table that supports index modification operations.
+type IndexAlterableTable interface {
+	Table
+	// CreateIndex creates an index for this table, using the provided parameters.
+	// Returns an error if the index name already exists, or an index with the same columns already exists.
+	CreateIndex(ctx *Context, indexName string, using IndexUsing, constraint IndexConstraint, columns []IndexColumn, comment string) error
+	// DropIndex removes an index from this table, if it exists.
+	// Returns an error if the removal failed or the index does not exist.
+	DropIndex(ctx *Context, indexName string) error
+	// RenameIndex renames an existing index to another name that is not already taken by another index on this table.
+	RenameIndex(ctx *Context, fromIndexName string, toIndexName string) error
+}
+
+// ForeignKeyReferenceOption is the behavior for this foreign key with the relevant action is performed on the foreign
+// table.
+type ForeignKeyReferenceOption string
+
+const (
+	ForeignKeyReferenceOption_DefaultAction ForeignKeyReferenceOption = "DEFAULT" // No explicit action was specified
+	ForeignKeyReferenceOption_Restrict      ForeignKeyReferenceOption = "RESTRICT"
+	ForeignKeyReferenceOption_Cascade       ForeignKeyReferenceOption = "CASCADE"
+	ForeignKeyReferenceOption_NoAction      ForeignKeyReferenceOption = "NO ACTION"
+	ForeignKeyReferenceOption_SetNull       ForeignKeyReferenceOption = "SET NULL"
+	ForeignKeyReferenceOption_SetDefault    ForeignKeyReferenceOption = "SET DEFAULT"
+)
+
+// ForeignKeyTable is a table that can declare its foreign key constraints.
+type ForeignKeyTable interface {
+	Table
+	// GetForeignKeys returns the foreign key constraints on this table.
+	GetForeignKeys(ctx *Context) ([]ForeignKeyConstraint, error)
+}
+
+// ForeignKeyAlterableTable represents a table that supports foreign key modification operations.
+type ForeignKeyAlterableTable interface {
+	Table
+	// CreateForeignKey creates an index for this table, using the provided parameters.
+	// Returns an error if the foreign key name already exists.
+	CreateForeignKey(ctx *Context, fkName string, columns []string, referencedTable string, referencedColumns []string,
+		onUpdate, onDelete ForeignKeyReferenceOption) error
+	// DropForeignKey removes a foreign key from the database.
+	DropForeignKey(ctx *Context, fkName string) error
 }
 
 // InsertableTable is a table that can process insertion of new rows.
 type InsertableTable interface {
+	Table
 	// Inserter returns an Inserter for this table. The Inserter will get one call to Insert() for each row to be
 	// inserted, and will end with a call to Close() to finalize the insert operation.
 	Inserter(*Context) RowInserter
@@ -229,6 +350,7 @@ type RowInserter interface {
 
 // DeleteableTable is a table that can process the deletion of rows
 type DeletableTable interface {
+	Table
 	// Deleter returns a RowDeleter for this table. The RowDeleter will get one call to Delete for each row to be deleted,
 	// and will end with a call to Close() to finalize the delete operation.
 	Deleter(*Context) RowDeleter
@@ -244,12 +366,45 @@ type RowDeleter interface {
 	Closer
 }
 
+// TruncateableTable is a table that can process the deletion of all rows.
+type TruncateableTable interface {
+	Table
+	// Truncate removes all rows from the table. If the table also implements DeletableTable and it is determined that
+	// truncate would be equivalent to a DELETE which spans the entire table, then this function will be called instead.
+	// Returns the number of rows that were removed.
+	Truncate(*Context) (int, error)
+}
+
+// AutoIncrementTable is a table that supports AUTO_INCREMENT.
+// Getter and Setter methods access the table's AUTO_INCREMENT
+// sequence. These methods should only be used for tables with
+// and AUTO_INCREMENT column in their schema.
+type AutoIncrementTable interface {
+	Table
+	// GetAutoIncrementValue gets the next AUTO_INCREMENT value.
+	// Implementations are responsible for updating their
+	// state to provide the correct values.
+	GetAutoIncrementValue(*Context) (interface{}, error)
+	// AutoIncrementSetter returns an AutoIncrementSetter.
+	AutoIncrementSetter(*Context) AutoIncrementSetter
+}
+
+// AutoIncrementSetter provides support for altering a table's
+// AUTO_INCREMENT sequence, eg 'ALTER TABLE t AUTO_INCREMENT = 10;'
+type AutoIncrementSetter interface {
+	// SetAutoIncrementValue sets a new AUTO_INCREMENT value.
+	SetAutoIncrementValue(*Context, interface{}) error
+	// Close finalizes the set operation, persisting the result.
+	Closer
+}
+
 type Closer interface {
 	Close(*Context) error
 }
 
-// RowReplacer is a combination of RowDeleter and RowInserter. We can't embed those interfaces because go doesn't allow
-// for overlapping interfaces (they both declare Close)
+// RowReplacer is a combination of RowDeleter and RowInserter.
+// TODO: We can't embed those interfaces because go 1.13 doesn't allow for overlapping interfaces (they both declare
+//  Close). Go 1.14 fixes this problem, but we aren't ready to drop support for 1.13 yet.
 type RowReplacer interface {
 	// Insert inserts the row given, returning an error if it cannot. Insert will be called once for each row to process
 	// for the replace operation, which may involve many rows. After all rows in an operation have been processed, Close
@@ -265,6 +420,7 @@ type RowReplacer interface {
 
 // Replacer allows rows to be replaced through a Delete (if applicable) then Insert.
 type ReplaceableTable interface {
+	Table
 	// Replacer returns a RowReplacer for this table. The RowReplacer will have Insert and optionally Delete called once
 	// for each row, followed by a call to Close() when all rows have been processed.
 	Replacer(ctx *Context) RowReplacer
@@ -272,6 +428,7 @@ type ReplaceableTable interface {
 
 // UpdateableTable is a table that can process updates of existing rows via update statements.
 type UpdatableTable interface {
+	Table
 	// Updater returns a RowUpdater for this table. The RowUpdater will have Update called once for each row to be
 	// updated, followed by a call to Close() when all rows have been processed.
 	Updater(ctx *Context) RowUpdater
@@ -312,6 +469,31 @@ type VersionedDatabase interface {
 	// GetTableNamesAsOf returns the table names of every table in the database as of the revision given. Implementors
 	// must choose which types of expressions to accept as revision names.
 	GetTableNamesAsOf(ctx *Context, asOf interface{}) ([]string, error)
+}
+
+// TriggerDefinition defines a trigger. Integrators are not expected to parse or understand the trigger definitions,
+// but must store and return them when asked.
+type TriggerDefinition struct {
+	Name            string // The name of this trigger. Trigger names in a database are unique.
+	CreateStatement string // The text of the statement to create this trigger.
+}
+
+// TriggerDatabase is a Database that supports the creation and execution of triggers. The engine handles all parsing
+// and execution logic for triggers. Integrators are not expected to parse or understand the trigger definitions, but
+// must store and return them when asked.
+type TriggerDatabase interface {
+	Database
+
+	// GetTriggers returns all trigger definitions for the database
+	GetTriggers(ctx *Context) ([]TriggerDefinition, error)
+
+	// CreateTrigger is called when an integrator is asked to create a trigger. The create trigger statement string is
+	// provided to store, along with the name of the trigger.
+	CreateTrigger(ctx *Context, definition TriggerDefinition) error
+
+	// DropTrigger is called when a trigger should no longer be stored. The name has already been validated.
+	// Returns ErrTriggerDoesNotExist if the trigger was not found.
+	DropTrigger(ctx *Context, name string) error
 }
 
 // GetTableInsensitive implements a case insensitive map lookup for tables keyed off of the table name.
@@ -399,7 +581,7 @@ type TableCreator interface {
 type ViewCreator interface {
 	// Notifies the database that a view with the given name and the given
 	// select statement as been created.
-	CreateView(ctx *Context, name string, selectStatment string) error
+	CreateView(ctx *Context, name string, selectStatement string) error
 }
 
 // TableDropper should be implemented by databases that can drop tables.
@@ -428,6 +610,7 @@ type ColumnOrder struct {
 
 // AlterableTable should be implemented by tables that can receive ALTER TABLE statements to modify their schemas.
 type AlterableTable interface {
+	Table
 	// AddColumn adds a column to this table as given. If non-nil, order specifies where in the schema to add the column.
 	AddColumn(ctx *Context, column *Column, order *ColumnOrder) error
 	// DropColumn drops the column with the name given.
@@ -498,4 +681,23 @@ func EvaluateCondition(ctx *Context, cond Expression, row Row) (bool, error) {
 	default:
 		return false, nil
 	}
+}
+
+// TypesEqual compares two Types and returns whether they are equivalent.
+func TypesEqual(a, b Type) bool {
+	//TODO: replace all of the Type() == Type() calls with TypesEqual
+	if tupA, ok := a.(tupleType); ok {
+		if tupB, ok := b.(tupleType); ok && len(tupA) == len(tupB) {
+			for i := range tupA {
+				if !TypesEqual(tupA[i], tupB[i]) {
+					return false
+				}
+			}
+			return true
+		}
+		return false
+	} else if _, ok := b.(tupleType); ok {
+		return false
+	}
+	return a == b
 }

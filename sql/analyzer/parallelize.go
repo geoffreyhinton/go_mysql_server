@@ -1,11 +1,26 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package analyzer
 
 import (
 	"strconv"
 
+	"github.com/go-kit/kit/metrics/discard"
+
 	"github.com/geoffreyhinton/go_mysql_server/sql"
 	"github.com/geoffreyhinton/go_mysql_server/sql/plan"
-	"github.com/go-kit/kit/metrics/discard"
 )
 
 var (
@@ -14,23 +29,45 @@ var (
 	ParallelQueryCounter = discard.NewCounter()
 )
 
-func shouldParallelize(node sql.Node) bool {
-	// Do not try to parallelize index operations or schema operations
-	switch node.(type) {
-	case *plan.CreateIndex, *plan.DropIndex, *plan.Describe, *plan.ShowCreateTable:
+func shouldParallelize(node sql.Node, scope *Scope) bool {
+	// Don't parallelize subqueries, this can blow up the execution graph quickly
+	if len(scope.Schema()) > 0 {
 		return false
-	default:
+	}
+
+	// Do not try to parallelize DDL or descriptive operations
+	return !isDdlNode(node)
+}
+
+// isDdlNode returns whether the node given is a DDL operation, which includes things like SHOW commands. In general,
+// these are nodes that interact only with schema and the catalog, not with any table rows.
+func isDdlNode(node sql.Node) bool {
+	switch node.(type) {
+	case *plan.CreateTable, *plan.DropTable, *plan.Truncate,
+		*plan.AddColumn, *plan.ModifyColumn, *plan.DropColumn,
+		*plan.RenameTable, *plan.RenameColumn,
+		*plan.CreateIndex, *plan.AlterIndex, *plan.DropIndex,
+		*plan.CreateForeignKey, *plan.DropForeignKey,
+		*plan.CreateTrigger, *plan.DropTrigger,
+		*plan.ShowTables, *plan.ShowCreateTable,
+		*plan.ShowTriggers, *plan.ShowCreateTrigger,
+		*plan.ShowDatabases, *plan.ShowCreateDatabase,
+		*plan.ShowColumns, *plan.ShowIndexes,
+		*plan.ShowProcessList, *plan.ShowTableStatus,
+		*plan.ShowVariables, *plan.ShowWarnings:
 		return true
+	default:
+		return false
 	}
 }
 
-func parallelize(ctx *sql.Context, a *Analyzer, node sql.Node) (sql.Node, error) {
+func parallelize(ctx *sql.Context, a *Analyzer, node sql.Node, scope *Scope) (sql.Node, error) {
 	if a.Parallelism <= 1 || !node.Resolved() {
 		return node, nil
 	}
 
 	proc, ok := node.(*plan.QueryProcess)
-	if (ok && !shouldParallelize(proc.Child)) || !shouldParallelize(node) {
+	if (ok && !shouldParallelize(proc.Child, nil)) || !shouldParallelize(node, scope) {
 		return node, nil
 	}
 
@@ -94,6 +131,11 @@ func isParallelizable(node sql.Node) bool {
 			*plan.Project,
 			*plan.TableAlias,
 			*plan.Exchange:
+		// IndexedTablesAccess already uses an index for lookups, so parallelizing it won't help in most cases (and can
+		// blow up the query execution graph)
+		case *plan.IndexedTableAccess:
+			ok = false
+			return false
 		case sql.Table:
 			lastWasTable = true
 			tableSeen = true

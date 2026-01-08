@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package analyzer
 
 import (
@@ -5,11 +19,11 @@ import (
 	"github.com/geoffreyhinton/go_mysql_server/sql/plan"
 )
 
-func resolveDatabase(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
+// resolveDatabase sets a database for nodes that implement sql.Databaser. Replaces sql.UnresolvedDatabase with the
+// actual sql.Database implementation from the catalog.
+func resolveDatabase(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
 	span, _ := ctx.Span("resolve_database")
 	defer span.Finish()
-
-	a.Log("resolve database, node of type: %T", n)
 
 	return plan.TransformUp(n, func(n sql.Node) (sql.Node, error) {
 		d, ok := n.(sql.Databaser)

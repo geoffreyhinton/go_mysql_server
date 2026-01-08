@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package analyzer
 
 import (
@@ -6,33 +20,33 @@ import (
 	"github.com/geoffreyhinton/go_mysql_server/sql/plan"
 )
 
-func reorderAggregations(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
-	span, _ := ctx.Span("reorder_aggregations")
+// flattenGroupByAggregations flattens any complex expressions in a GroupBy and adds a projection on top of the result.
+// The child terms of any complex expressions get pushed down to become selected expressions in the GroupBy, and then a
+// new project node re-applies the original expression to the new schema of the GroupBy.
+// e.g. GroupBy(sum(a) + sum(b)) becomes project(sum(a) + sum(b), GroupBy(sum(a), sum(b)).
+func flattenGroupByAggregations(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
+	span, _ := ctx.Span("flatten_group_by_aggregations")
 	defer span.Finish()
 
 	if !n.Resolved() {
 		return n, nil
 	}
 
-	a.Log("reorder aggregations, node of type: %T", n)
-
 	return plan.TransformUp(n, func(n sql.Node) (sql.Node, error) {
 		switch n := n.(type) {
 		case *plan.GroupBy:
-			if !hasHiddenAggregations(n.Aggregate...) {
+			if !hasHiddenAggregations(n.SelectedExprs...) {
 				return n, nil
 			}
 
-			a.Log("fixing aggregations of node of type: %T", n)
-
-			return fixAggregations(n.Aggregate, n.Grouping, n.Child)
+			return flattenedGroupBy(n.SelectedExprs, n.GroupByExprs, n.Child)
 		default:
 			return n, nil
 		}
 	})
 }
 
-func fixAggregations(projection, grouping []sql.Expression, child sql.Node) (sql.Node, error) {
+func flattenedGroupBy(projection, grouping []sql.Expression, child sql.Node) (sql.Node, error) {
 	var aggregate = make([]sql.Expression, 0, len(projection))
 	var newProjection = make([]sql.Expression, len(projection))
 
@@ -85,9 +99,8 @@ func getNameAndSource(e sql.Expression) (name, source string) {
 	return
 }
 
-// hasHiddenAggregations reports whether any of the given expressions has a
-// hidden aggregation. That is, an aggregation that is not at the root of the
-// expression.
+// hasHiddenAggregations returns whether any of the given expressions has a hidden aggregation. That is, an aggregation
+// that is not at the root of the expression.
 func hasHiddenAggregations(exprs ...sql.Expression) bool {
 	for _, e := range exprs {
 		if containsHiddenAggregation(e) {
@@ -97,6 +110,8 @@ func hasHiddenAggregations(exprs ...sql.Expression) bool {
 	return false
 }
 
+// containsHiddenAggregation returns whether the given expressions has a hidden aggregation. That is, an aggregation
+// that is not at the root of the expression.
 func containsHiddenAggregation(e sql.Expression) bool {
 	_, ok := e.(sql.Aggregation)
 	if ok {
@@ -106,6 +121,7 @@ func containsHiddenAggregation(e sql.Expression) bool {
 	return containsAggregation(e)
 }
 
+// containsAggregation returns whether the expression given contains any sql.Aggregation terms.
 func containsAggregation(e sql.Expression) bool {
 	var hasAgg bool
 	sql.Inspect(e, func(e sql.Expression) bool {

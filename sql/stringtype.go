@@ -1,14 +1,30 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package sql
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/spf13/cast"
-	errors "gopkg.in/src-d/go-errors.v1"
-	"vitess.io/vitess/go/sqltypes"
-	"vitess.io/vitess/go/vt/proto/query"
+	"github.com/shopspring/decimal"
+
+	"github.com/dolthub/vitess/go/sqltypes"
+	"github.com/dolthub/vitess/go/vt/proto/query"
+	"gopkg.in/src-d/go-errors.v1"
 )
 
 const (
@@ -204,12 +220,48 @@ func (t stringType) Convert(v interface{}) (interface{}, error) {
 		return nil, nil
 	}
 
-	if ti, ok := v.(time.Time); ok {
-		v = ti.Format(TimestampDatetimeLayout)
-	}
-
-	val, err := cast.ToStringE(v)
-	if err != nil {
+	var val string
+	switch s := v.(type) {
+	case bool:
+		val = strconv.FormatBool(s)
+	case float64:
+		val = strconv.FormatFloat(s, 'f', -1, 64)
+	case float32:
+		val = strconv.FormatFloat(float64(s), 'f', -1, 32)
+	case int:
+		val = strconv.FormatInt(int64(s), 10)
+	case int8:
+		val = strconv.FormatInt(int64(s), 10)
+	case int16:
+		val = strconv.FormatInt(int64(s), 10)
+	case int32:
+		val = strconv.FormatInt(int64(s), 10)
+	case int64:
+		val = strconv.FormatInt(s, 10)
+	case uint:
+		val = strconv.FormatUint(uint64(s), 10)
+	case uint8:
+		val = strconv.FormatUint(uint64(s), 10)
+	case uint16:
+		val = strconv.FormatUint(uint64(s), 10)
+	case uint32:
+		val = strconv.FormatUint(uint64(s), 10)
+	case uint64:
+		val = strconv.FormatUint(s, 10)
+	case string:
+		val = s
+	case []byte:
+		val = string(s)
+	case time.Time:
+		val = s.Format(TimestampDatetimeLayout)
+	case decimal.Decimal:
+		val = s.String()
+	case decimal.NullDecimal:
+		if !s.Valid {
+			return nil, nil
+		}
+		val = s.Decimal.String()
+	default:
 		return nil, ErrConvertToSQL.New(t)
 	}
 

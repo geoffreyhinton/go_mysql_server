@@ -1,7 +1,22 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package plan
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/geoffreyhinton/go_mysql_server/sql"
 )
@@ -9,7 +24,8 @@ import (
 // ShowColumns shows the columns details of a table.
 type ShowColumns struct {
 	UnaryNode
-	Full bool
+	Full    bool
+	Indexes []sql.Index
 }
 
 var (
@@ -37,7 +53,7 @@ var (
 
 // NewShowColumns creates a new ShowColumns node.
 func NewShowColumns(full bool, child sql.Node) *ShowColumns {
-	return &ShowColumns{UnaryNode{Child: child}, full}
+	return &ShowColumns{UnaryNode: UnaryNode{Child: child}, Full: full}
 }
 
 var _ sql.Node = (*ShowColumns)(nil)
@@ -51,7 +67,7 @@ func (s *ShowColumns) Schema() sql.Schema {
 }
 
 // RowIter creates a new ShowColumns node.
-func (s *ShowColumns) RowIter(ctx *sql.Context) (sql.RowIter, error) {
+func (s *ShowColumns) RowIter(ctx *sql.Context, row sql.Row) (sql.RowIter, error) {
 	span, _ := ctx.Span("plan.ShowColumns")
 
 	schema := s.Child.Schema()
@@ -60,7 +76,7 @@ func (s *ShowColumns) RowIter(ctx *sql.Context) (sql.RowIter, error) {
 		var row sql.Row
 		var collation interface{}
 		if sql.IsTextOnly(col.Type) {
-			collation = sql.DefaultCollation
+			collation = sql.Collation_Default.String()
 		}
 
 		var null = "NO"
@@ -68,36 +84,52 @@ func (s *ShowColumns) RowIter(ctx *sql.Context) (sql.RowIter, error) {
 			null = "YES"
 		}
 
+		node := s.Child
+		if exchange, ok := node.(*Exchange); ok {
+			node = exchange.Child
+		}
 		key := ""
-		if col.PrimaryKey {
-			key = "PRI"
+		switch table := node.(type) {
+		case *ResolvedTable:
+			if col.PrimaryKey {
+				key = "PRI"
+			} else if s.isFirstColInUniqueKey(col, table) {
+				key = "UNI"
+			} else if s.isFirstColInNonUniqueKey(col, table) {
+				key = "MUL"
+			}
+		case *SubqueryAlias:
+			// no key info for views
+		default:
+			panic(fmt.Sprintf("unexpected type %T", s.Child))
 		}
 
 		var defaultVal string
 		if col.Default != nil {
-			defaultVal = fmt.Sprint(col.Default)
+			defaultVal = col.Default.String()
 		}
 
+		// TODO: rather than lower-casing here, we should lower-case the String() method of types
 		if s.Full {
 			row = sql.Row{
 				col.Name,
-				col.Type.String(),
+				strings.ToLower(col.Type.String()),
 				collation,
 				null,
-				key, // Key
+				key,
 				defaultVal,
-				"",          // Extra
-				"",          // Privileges
-				col.Comment, // Comment
+				col.Extra,
+				"", // Privileges
+				col.Comment,
 			}
 		} else {
 			row = sql.Row{
 				col.Name,
-				col.Type.String(),
+				strings.ToLower(col.Type.String()),
 				null,
 				key,
 				defaultVal,
-				"", // Extra
+				col.Extra,
 			}
 		}
 
@@ -113,7 +145,9 @@ func (s *ShowColumns) WithChildren(children ...sql.Node) (sql.Node, error) {
 		return nil, sql.ErrInvalidChildrenNumber.New(s, len(children), 1)
 	}
 
-	return NewShowColumns(s.Full, children[0]), nil
+	showColumns := NewShowColumns(s.Full, children[0])
+	showColumns.Indexes = s.Indexes
+	return showColumns, nil
 }
 
 func (s *ShowColumns) String() string {
@@ -125,4 +159,34 @@ func (s *ShowColumns) String() string {
 	}
 	_ = tp.WriteChildren(s.Child.String())
 	return tp.String()
+}
+
+func (s *ShowColumns) isFirstColInUniqueKey(col *sql.Column, table sql.Table) bool {
+	for _, idx := range s.Indexes {
+		if !idx.IsUnique() {
+			continue
+		}
+
+		firstIndexCol := GetColumnFromIndexExpr(idx.Expressions()[0], table)
+		if firstIndexCol != nil && firstIndexCol.Name == col.Name {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (s *ShowColumns) isFirstColInNonUniqueKey(col *sql.Column, table sql.Table) bool {
+	for _, idx := range s.Indexes {
+		if idx.IsUnique() {
+			continue
+		}
+
+		firstIndexCol := GetColumnFromIndexExpr(idx.Expressions()[0], table)
+		if firstIndexCol != nil && firstIndexCol.Name == col.Name {
+			return true
+		}
+	}
+
+	return false
 }

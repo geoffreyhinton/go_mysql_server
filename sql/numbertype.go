@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package sql
 
 import (
@@ -6,11 +20,12 @@ import (
 	"strconv"
 	"time"
 
-	errors "gopkg.in/src-d/go-errors.v1"
+	"github.com/shopspring/decimal"
+	"gopkg.in/src-d/go-errors.v1"
 
+	"github.com/dolthub/vitess/go/sqltypes"
+	"github.com/dolthub/vitess/go/vt/proto/query"
 	"github.com/spf13/cast"
-	"vitess.io/vitess/go/sqltypes"
-	"vitess.io/vitess/go/vt/proto/query"
 )
 
 const (
@@ -85,6 +100,38 @@ func MustCreateNumberType(baseType query.Type) NumberType {
 	return nt
 }
 
+func NumericUnaryValue(t Type) interface{} {
+	nt := t.(numberTypeImpl)
+	switch nt.baseType {
+	case sqltypes.Int8:
+		return int8(1)
+	case sqltypes.Uint8:
+		return uint8(1)
+	case sqltypes.Int16:
+		return int16(1)
+	case sqltypes.Uint16:
+		return uint16(1)
+	case sqltypes.Int24:
+		return int32(1)
+	case sqltypes.Uint24:
+		return uint32(1)
+	case sqltypes.Int32:
+		return int32(1)
+	case sqltypes.Uint32:
+		return uint32(1)
+	case sqltypes.Int64:
+		return int64(1)
+	case sqltypes.Uint64:
+		return uint64(1)
+	case sqltypes.Float32:
+		return float32(1)
+	case sqltypes.Float64:
+		return float64(1)
+	default:
+		panic(fmt.Sprintf("%v is not a valid number base type", nt.baseType.String()))
+	}
+}
+
 // Compare implements Type interface.
 func (t numberTypeImpl) Compare(a interface{}, b interface{}) (int, error) {
 	switch t.baseType {
@@ -109,6 +156,9 @@ func (t numberTypeImpl) Convert(v interface{}) (interface{}, error) {
 
 	switch t.baseType {
 	case sqltypes.Int8:
+		if dec, ok := v.(decimal.Decimal); ok {
+			v = dec.IntPart()
+		}
 		num, err := cast.ToInt64E(v)
 		if err != nil {
 			return nil, err
@@ -118,6 +168,9 @@ func (t numberTypeImpl) Convert(v interface{}) (interface{}, error) {
 		}
 		return int8(num), nil
 	case sqltypes.Uint8:
+		if dec, ok := v.(decimal.Decimal); ok {
+			v = dec.IntPart()
+		}
 		num, err := cast.ToUint64E(v)
 		if err != nil {
 			return nil, err
@@ -127,6 +180,9 @@ func (t numberTypeImpl) Convert(v interface{}) (interface{}, error) {
 		}
 		return uint8(num), nil
 	case sqltypes.Int16:
+		if dec, ok := v.(decimal.Decimal); ok {
+			v = dec.IntPart()
+		}
 		num, err := cast.ToInt64E(v)
 		if err != nil {
 			return nil, err
@@ -136,6 +192,9 @@ func (t numberTypeImpl) Convert(v interface{}) (interface{}, error) {
 		}
 		return int16(num), nil
 	case sqltypes.Uint16:
+		if dec, ok := v.(decimal.Decimal); ok {
+			v = dec.IntPart()
+		}
 		num, err := cast.ToUint64E(v)
 		if err != nil {
 			return nil, err
@@ -145,6 +204,9 @@ func (t numberTypeImpl) Convert(v interface{}) (interface{}, error) {
 		}
 		return uint16(num), nil
 	case sqltypes.Int24:
+		if dec, ok := v.(decimal.Decimal); ok {
+			v = dec.IntPart()
+		}
 		num, err := cast.ToInt64E(v)
 		if err != nil {
 			return nil, err
@@ -154,6 +216,9 @@ func (t numberTypeImpl) Convert(v interface{}) (interface{}, error) {
 		}
 		return int32(num), nil
 	case sqltypes.Uint24:
+		if dec, ok := v.(decimal.Decimal); ok {
+			v = dec.IntPart()
+		}
 		num, err := cast.ToUint64E(v)
 		if err != nil {
 			return nil, err
@@ -163,6 +228,9 @@ func (t numberTypeImpl) Convert(v interface{}) (interface{}, error) {
 		}
 		return uint32(num), nil
 	case sqltypes.Int32:
+		if dec, ok := v.(decimal.Decimal); ok {
+			v = dec.IntPart()
+		}
 		num, err := cast.ToInt64E(v)
 		if err != nil {
 			return nil, err
@@ -172,6 +240,9 @@ func (t numberTypeImpl) Convert(v interface{}) (interface{}, error) {
 		}
 		return int32(num), nil
 	case sqltypes.Uint32:
+		if dec, ok := v.(decimal.Decimal); ok {
+			v = dec.IntPart()
+		}
 		num, err := cast.ToUint64E(v)
 		if err != nil {
 			return nil, err
@@ -186,18 +257,28 @@ func (t numberTypeImpl) Convert(v interface{}) (interface{}, error) {
 				return nil, ErrOutOfRange.New(u, t)
 			}
 		}
+		if dec, ok := v.(decimal.Decimal); ok {
+			return dec.IntPart(), nil
+		}
 		num, err := cast.ToInt64E(v)
 		if err != nil {
 			return nil, err
 		}
 		return num, err
 	case sqltypes.Uint64:
+		if dec, ok := v.(decimal.Decimal); ok {
+			v = dec.IntPart()
+		}
 		num, err := cast.ToUint64E(v)
 		if err != nil {
 			return nil, err
 		}
 		return num, nil
 	case sqltypes.Float32:
+		if dec, ok := v.(decimal.Decimal); ok {
+			f, _ := dec.Float64()
+			return float32(f), nil
+		}
 		num, err := cast.ToFloat64E(v)
 		if err != nil {
 			return nil, err
@@ -207,6 +288,11 @@ func (t numberTypeImpl) Convert(v interface{}) (interface{}, error) {
 		}
 		return float32(num), nil
 	case sqltypes.Float64:
+		if dec, ok := v.(decimal.Decimal); ok {
+			f, _ := dec.Float64()
+			return f, nil
+		}
+
 		num, err := cast.ToFloat64E(v)
 		if err != nil {
 			return nil, err

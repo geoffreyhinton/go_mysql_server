@@ -1,11 +1,26 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package plan
 
 import (
 	"io"
 	"reflect"
 
-	"github.com/geoffreyhinton/go_mysql_server/sql"
 	opentracing "github.com/opentracing/opentracing-go"
+
+	"github.com/geoffreyhinton/go_mysql_server/sql"
 )
 
 // CrossJoin is a cross join between two tables.
@@ -17,35 +32,35 @@ type CrossJoin struct {
 func NewCrossJoin(left sql.Node, right sql.Node) *CrossJoin {
 	return &CrossJoin{
 		BinaryNode: BinaryNode{
-			Left:  left,
-			Right: right,
+			left:  left,
+			right: right,
 		},
 	}
 }
 
 // Schema implements the Node interface.
 func (p *CrossJoin) Schema() sql.Schema {
-	return append(p.Left.Schema(), p.Right.Schema()...)
+	return append(p.left.Schema(), p.right.Schema()...)
 }
 
 // Resolved implements the Resolvable interface.
 func (p *CrossJoin) Resolved() bool {
-	return p.Left.Resolved() && p.Right.Resolved()
+	return p.left.Resolved() && p.right.Resolved()
 }
 
 // RowIter implements the Node interface.
-func (p *CrossJoin) RowIter(ctx *sql.Context) (sql.RowIter, error) {
+func (p *CrossJoin) RowIter(ctx *sql.Context, row sql.Row) (sql.RowIter, error) {
 	var left, right string
-	if leftTable, ok := p.Left.(sql.Nameable); ok {
+	if leftTable, ok := p.left.(sql.Nameable); ok {
 		left = leftTable.Name()
 	} else {
-		left = reflect.TypeOf(p.Left).String()
+		left = reflect.TypeOf(p.left).String()
 	}
 
-	if rightTable, ok := p.Right.(sql.Nameable); ok {
+	if rightTable, ok := p.right.(sql.Nameable); ok {
 		right = rightTable.Name()
 	} else {
-		right = reflect.TypeOf(p.Right).String()
+		right = reflect.TypeOf(p.right).String()
 	}
 
 	span, ctx := ctx.Span("plan.CrossJoin", opentracing.Tags{
@@ -53,7 +68,7 @@ func (p *CrossJoin) RowIter(ctx *sql.Context) (sql.RowIter, error) {
 		"right": right,
 	})
 
-	li, err := p.Left.RowIter(ctx)
+	li, err := p.left.RowIter(ctx, row)
 	if err != nil {
 		span.Finish()
 		return nil, err
@@ -61,7 +76,7 @@ func (p *CrossJoin) RowIter(ctx *sql.Context) (sql.RowIter, error) {
 
 	return sql.NewSpanIter(span, &crossJoinIterator{
 		l:  li,
-		rp: p.Right,
+		rp: p.right,
 		s:  ctx,
 	}), nil
 }
@@ -78,12 +93,19 @@ func (p *CrossJoin) WithChildren(children ...sql.Node) (sql.Node, error) {
 func (p *CrossJoin) String() string {
 	pr := sql.NewTreePrinter()
 	_ = pr.WriteNode("CrossJoin")
-	_ = pr.WriteChildren(p.Left.String(), p.Right.String())
+	_ = pr.WriteChildren(p.left.String(), p.right.String())
+	return pr.String()
+}
+
+func (p *CrossJoin) DebugString() string {
+	pr := sql.NewTreePrinter()
+	_ = pr.WriteNode("CrossJoin")
+	_ = pr.WriteChildren(sql.DebugString(p.left), sql.DebugString(p.right))
 	return pr.String()
 }
 
 type rowIterProvider interface {
-	RowIter(*sql.Context) (sql.RowIter, error)
+	RowIter(*sql.Context, sql.Row) (sql.RowIter, error)
 }
 
 type crossJoinIterator struct {
@@ -107,7 +129,7 @@ func (i *crossJoinIterator) Next() (sql.Row, error) {
 		}
 
 		if i.r == nil {
-			iter, err := i.rp.RowIter(i.s)
+			iter, err := i.rp.RowIter(i.s, i.leftRow)
 			if err != nil {
 				return nil, err
 			}

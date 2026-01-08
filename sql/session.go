@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package sql
 
 import (
@@ -21,7 +35,8 @@ const (
 )
 
 const (
-	CurrentDBSessionVar = "current_database"
+	CurrentDBSessionVar  = "current_database"
+	AutoCommitSessionVar = "autocommit"
 )
 
 // Client holds session user information.
@@ -39,13 +54,15 @@ type Session interface {
 	// User of the session.
 	Client() Client
 	// Set session configuration.
-	Set(key string, typ Type, value interface{})
+	Set(ctx context.Context, key string, typ Type, value interface{}) error
 	// Get session configuration.
 	Get(key string) (Type, interface{})
 	// GetCurrentDatabase gets the current database for this session
 	GetCurrentDatabase() string
 	// SetDefaultDatabase sets the current database for this session
 	SetCurrentDatabase(dbName string)
+	// CommitTransaction commits the current transaction for this session for the current database
+	CommitTransaction(*Context) error
 	// GetAll returns a copy of session configuration
 	GetAll() map[string]TypedValue
 	// ID returns the unique ID of the connection.
@@ -58,6 +75,12 @@ type Session interface {
 	ClearWarnings()
 	// WarningCount returns a number of session warnings
 	WarningCount() uint16
+	// AddLock adds a lock to the set of locks owned by this user which will need to be released if this session terminates
+	AddLock(lockName string) error
+	// DelLock removes a lock from the set of locks owned by this user
+	DelLock(lockName string) error
+	// IterLocks iterates through all locks owned by this user
+	IterLocks(cb func(name string) error) error
 }
 
 // BaseSession is the basic session type.
@@ -66,10 +89,17 @@ type BaseSession struct {
 	addr      string
 	currentDB string
 	client    Client
-	mu        sync.RWMutex
+	mu        *sync.RWMutex
 	config    map[string]TypedValue
 	warnings  []*Warning
 	warncnt   uint16
+	locks     map[string]bool
+}
+
+// CommitTransaction commits the current transaction for the current database.
+func (s *BaseSession) CommitTransaction(*Context) error {
+	// no-op on BaseSession
+	return nil
 }
 
 // Address returns the server address.
@@ -79,10 +109,11 @@ func (s *BaseSession) Address() string { return s.addr }
 func (s *BaseSession) Client() Client { return s.client }
 
 // Set implements the Session interface.
-func (s *BaseSession) Set(key string, typ Type, value interface{}) {
+func (s *BaseSession) Set(ctx context.Context, key string, typ Type, value interface{}) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.config[key] = TypedValue{typ, value}
+	return nil
 }
 
 // Get implements the Session interface.
@@ -167,6 +198,40 @@ func (s *BaseSession) WarningCount() uint16 {
 	return uint16(len(s.warnings))
 }
 
+// AddLock adds a lock to the set of locks owned by this user which will need to be released if this session terminates
+func (s *BaseSession) AddLock(lockName string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.locks[lockName] = true
+	return nil
+}
+
+// DelLock removes a lock from the set of locks owned by this user
+func (s *BaseSession) DelLock(lockName string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.locks, lockName)
+	return nil
+}
+
+// IterLocks iterates through all locks owned by this user
+func (s *BaseSession) IterLocks(cb func(name string) error) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for name := range s.locks {
+		err := cb(name)
+
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 type (
 	// TypedValue is a value along with its type.
 	TypedValue struct {
@@ -183,6 +248,7 @@ type (
 )
 
 // DefaultSessionConfig returns default values for session variables
+// TODO: allow integrators to specify defaults for their system variables
 func DefaultSessionConfig() map[string]TypedValue {
 	return map[string]TypedValue{
 		"auto_increment_increment": TypedValue{Int64, int64(1)},
@@ -191,12 +257,17 @@ func DefaultSessionConfig() map[string]TypedValue {
 		"max_allowed_packet":       TypedValue{Int32, math.MaxInt32},
 		"sql_mode":                 TypedValue{LongText, ""},
 		"gtid_mode":                TypedValue{Int32, int32(0)},
-		"collation_database":       TypedValue{LongText, "utf8_bin"},
+		"collation_database":       TypedValue{LongText, Collation_Default.String()},
 		"ndbinfo_version":          TypedValue{LongText, ""},
 		"sql_select_limit":         TypedValue{Int32, math.MaxInt32},
 		"transaction_isolation":    TypedValue{LongText, "READ UNCOMMITTED"},
 		"version":                  TypedValue{LongText, ""},
 		"version_comment":          TypedValue{LongText, ""},
+		"autocommit":               TypedValue{Int8, 0},
+		"character_set_client":     TypedValue{LongText, Collation_Default.CharacterSet().String()},
+		"character_set_connection": TypedValue{LongText, Collation_Default.CharacterSet().String()},
+		"character_set_results":    TypedValue{LongText, Collation_Default.CharacterSet().String()},
+		"collation_connection":     TypedValue{LongText, Collation_Default.String()},
 	}
 }
 
@@ -219,18 +290,18 @@ func NewSession(server, client, user string, id uint32) Session {
 			User:    user,
 		},
 		config: DefaultSessionConfig(),
+		mu:     &sync.RWMutex{},
+		locks:  make(map[string]bool),
 	}
 }
 
-var autoSessionIDs uint32
+// Session ID 0 used as invalid SessionID
+var autoSessionIDs uint32 = 1
 
 // NewBaseSession creates a new empty session.
 func NewBaseSession() Session {
-	return &BaseSession{id: atomic.AddUint32(&autoSessionIDs, 1), config: DefaultSessionConfig()}
+	return &BaseSession{id: atomic.AddUint32(&autoSessionIDs, 1), config: DefaultSessionConfig(), mu: &sync.RWMutex{}, locks: make(map[string]bool)}
 }
-
-var defIdxReg = NewIndexRegistry()
-var defViewReg = NewViewRegistry()
 
 // Context of the query execution.
 type Context struct {
@@ -238,11 +309,12 @@ type Context struct {
 	Session
 	*IndexRegistry
 	*ViewRegistry
-	Memory   *MemoryManager
-	pid      uint64
-	query    string
-	tracer   opentracing.Tracer
-	rootSpan opentracing.Span
+	Memory    *MemoryManager
+	pid       uint64
+	query     string
+	queryTime time.Time
+	tracer    opentracing.Tracer
+	rootSpan  opentracing.Span
 }
 
 // ContextOption is a function to configure the context.
@@ -302,6 +374,22 @@ func WithRootSpan(s opentracing.Span) ContextOption {
 	}
 }
 
+var ctxNowFunc = time.Now
+var ctxNowFuncMutex = &sync.Mutex{}
+
+func RunWithNowFunc(nowFunc func() time.Time, fn func() error) error {
+	ctxNowFuncMutex.Lock()
+	defer ctxNowFuncMutex.Unlock()
+
+	initialNow := ctxNowFunc
+	ctxNowFunc = nowFunc
+	defer func() {
+		ctxNowFunc = initialNow
+	}()
+
+	return fn()
+}
+
 // NewContext creates a new query context. Options can be passed to configure
 // the context. If some aspect of the context is not configure, the default
 // value will be used.
@@ -311,23 +399,30 @@ func NewContext(
 	ctx context.Context,
 	opts ...ContextOption,
 ) *Context {
-	c := &Context{ctx, NewBaseSession(), nil, nil, nil, 0, "", opentracing.NoopTracer{}, nil}
+	c := &Context{ctx, NewBaseSession(), nil, nil, nil, 0, "", ctxNowFunc(), opentracing.NoopTracer{}, nil}
 	for _, opt := range opts {
 		opt(c)
 	}
 
 	if c.IndexRegistry == nil {
-		c.IndexRegistry = defIdxReg
+		c.IndexRegistry = NewIndexRegistry()
 	}
 
 	if c.ViewRegistry == nil {
-		c.ViewRegistry = defViewReg
+		c.ViewRegistry = NewViewRegistry()
 	}
 
 	if c.Memory == nil {
 		c.Memory = NewMemoryManager(ProcessMemory)
 	}
 	return c
+}
+
+// Applys the options given to the context. Mostly for tests, not safe for use after construction of the context.
+func (c *Context) ApplyOpts(opts ...ContextOption) {
+	for _, opt := range opts {
+		opt(c)
+	}
 }
 
 // NewEmptyContext returns a default context with default values.
@@ -339,9 +434,14 @@ func (c *Context) Pid() uint64 { return c.pid }
 // Query returns the query string associated with this context.
 func (c *Context) Query() string { return c.query }
 
+// QueryTime returns the time.Time when the context associated with this query was created
+func (c *Context) QueryTime() time.Time {
+	return c.queryTime
+}
+
 // Span creates a new tracing span with the given context.
 // It will return the span and a new context that should be passed to all
-// childrens of this span.
+// children of this span.
 func (c *Context) Span(
 	opName string,
 	opts ...opentracing.StartSpanOption,
@@ -353,7 +453,36 @@ func (c *Context) Span(
 	span := c.tracer.StartSpan(opName, opts...)
 	ctx := opentracing.ContextWithSpan(c.Context, span)
 
-	return span, &Context{ctx, c.Session, c.IndexRegistry, c.ViewRegistry, c.Memory, c.Pid(), c.Query(), c.tracer, c.rootSpan}
+	return span, &Context{
+		Context:       ctx,
+		Session:       c.Session,
+		IndexRegistry: c.IndexRegistry,
+		ViewRegistry:  c.ViewRegistry,
+		Memory:        c.Memory,
+		pid:           c.Pid(),
+		query:         c.Query(),
+		queryTime:     c.queryTime,
+		tracer:        c.tracer,
+		rootSpan:      c.rootSpan,
+	}
+}
+
+// NewSubContext creates a new sub-context with the current context as parent. Returns the resulting context.CancelFunc
+// as well as the new *sql.Context, which be used to cancel the new context before the parent is finished.
+func (c *Context) NewSubContext() (*Context, context.CancelFunc) {
+	ctx, cancelFunc := context.WithCancel(c.Context)
+	return &Context{
+		Context:       ctx,
+		Session:       c.Session,
+		IndexRegistry: c.IndexRegistry,
+		ViewRegistry:  c.ViewRegistry,
+		Memory:        c.Memory,
+		pid:           c.Pid(),
+		query:         c.Query(),
+		queryTime:     c.queryTime,
+		tracer:        c.tracer,
+		rootSpan:      c.rootSpan,
+	}, cancelFunc
 }
 
 func (c *Context) WithCurrentDB(db string) *Context {
@@ -363,7 +492,18 @@ func (c *Context) WithCurrentDB(db string) *Context {
 
 // WithContext returns a new context with the given underlying context.
 func (c *Context) WithContext(ctx context.Context) *Context {
-	return &Context{ctx, c.Session, c.IndexRegistry, c.ViewRegistry, c.Memory, c.Pid(), c.Query(), c.tracer, c.rootSpan}
+	return &Context{
+		Context:       ctx,
+		Session:       c.Session,
+		IndexRegistry: c.IndexRegistry,
+		ViewRegistry:  c.ViewRegistry,
+		Memory:        c.Memory,
+		pid:           c.Pid(),
+		query:         c.Query(),
+		queryTime:     c.queryTime,
+		tracer:        c.tracer,
+		rootSpan:      c.rootSpan,
+	}
 }
 
 // RootSpan returns the root span, if any.
@@ -390,10 +530,17 @@ func (c *Context) Warn(code int, msg string, args ...interface{}) {
 }
 
 // NewSpanIter creates a RowIter executed in the given span.
+// Currently inactive, returns the iter returned unaltered.
 func NewSpanIter(span opentracing.Span, iter RowIter) RowIter {
-	return &spanIter{
-		span: span,
-		iter: iter,
+	// In the default, non traced case, we should not bother with
+	// collecting the timings below.
+	if (span.Tracer() == opentracing.NoopTracer{}) {
+		return iter
+	} else {
+		return &spanIter{
+			span: span,
+			iter: iter,
+		}
 	}
 }
 

@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package memory
 
 import (
@@ -11,8 +25,10 @@ type NegateIndexLookup struct {
 }
 
 var _ memoryIndexLookup = (*NegateIndexLookup)(nil)
+var _ sql.IndexLookup = (*NegateIndexLookup)(nil)
 
-func (l *NegateIndexLookup) ID() string { return "not " + l.Lookup.ID() }
+func (l *NegateIndexLookup) ID() string     { return "not " + l.Lookup.ID() }
+func (l *NegateIndexLookup) String() string { return "not " + l.Lookup.ID() }
 
 func (l *NegateIndexLookup) Values(p sql.Partition) (sql.IndexValueIter, error) {
 	return &indexValIter{
@@ -35,14 +51,10 @@ func (*NegateIndexLookup) IsMergeable(lookup sql.IndexLookup) bool {
 	return ok
 }
 
-func (l *NegateIndexLookup) Union(lookups ...sql.IndexLookup) sql.IndexLookup {
-	return union(l.Index, l, lookups...)
+func (l *NegateIndexLookup) Union(lookups ...sql.IndexLookup) (sql.IndexLookup, error) {
+	return union(l.Index, l, lookups...), nil
 }
 
-func (*NegateIndexLookup) Difference(...sql.IndexLookup) sql.IndexLookup {
-	panic("negateIndexLookup.Difference is not implemented")
-}
-
-func (l *NegateIndexLookup) Intersection(indexes ...sql.IndexLookup) sql.IndexLookup {
-	return intersection(l.Index, l, indexes...)
+func (l *NegateIndexLookup) Intersection(indexes ...sql.IndexLookup) (sql.IndexLookup, error) {
+	return intersection(l.Index, l, indexes...), nil
 }

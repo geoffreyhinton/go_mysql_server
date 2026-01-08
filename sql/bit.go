@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package sql
 
 import (
@@ -5,8 +19,9 @@ import (
 	"strconv"
 
 	"encoding/binary"
-	"vitess.io/vitess/go/sqltypes"
-	"vitess.io/vitess/go/vt/proto/query"
+
+	"github.com/dolthub/vitess/go/sqltypes"
+	"github.com/dolthub/vitess/go/vt/proto/query"
 )
 
 const (
@@ -25,7 +40,7 @@ type BitType interface {
 	NumberOfBits() uint8
 }
 
-type bitType struct{
+type bitType struct {
 	numOfBits uint8
 }
 
@@ -125,7 +140,7 @@ func (t bitType) Convert(v interface{}) (interface{}, error) {
 		return nil, ErrInvalidType.New(t)
 	}
 
-	if value > uint64(1 << t.numOfBits - 1) {
+	if value > uint64(1<<t.numOfBits-1) {
 		return nil, fmt.Errorf("%v is beyond the maximum value that can be held by %v bits", value, t.numOfBits)
 	}
 	return value, nil

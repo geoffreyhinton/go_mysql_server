@@ -1,8 +1,23 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package sql
 
 import (
+	"gopkg.in/src-d/go-errors.v1"
+
 	"github.com/geoffreyhinton/go_mysql_server/internal/similartext"
-	errors "gopkg.in/src-d/go-errors.v1"
 )
 
 // ErrFunctionAlreadyRegistered is thrown when a function is already registered
@@ -25,55 +40,74 @@ type Function interface {
 	isFunction()
 }
 
+type CreateFunc0Args func() Expression
+type CreateFunc1Args func(e1 Expression) Expression
+type CreateFunc2Args func(e1, e2 Expression) Expression
+type CreateFunc3Args func(e1, e2, e3 Expression) Expression
+type CreateFunc4Args func(e1, e2, e3, e4 Expression) Expression
+type CreateFunc5Args func(e1, e2, e3, e4, e5 Expression) Expression
+type CreateFunc6Args func(e1, e2, e3, e4, e5, e6 Expression) Expression
+type CreateFunc7Args func(e1, e2, e3, e4, e5, e6, e7 Expression) Expression
+type CreateFuncNArgs func(args ...Expression) (Expression, error)
+
 type (
 	// Function0 is a function with 0 arguments.
 	Function0 struct {
 		Name string
-		Fn   func() Expression
+		Fn   CreateFunc0Args
 	}
 	// Function1 is a function with 1 argument.
 	Function1 struct {
 		Name string
-		Fn   func(e Expression) Expression
+		Fn   CreateFunc1Args
 	}
 	// Function2 is a function with 2 arguments.
 	Function2 struct {
 		Name string
-		Fn   func(e1, e2 Expression) Expression
+		Fn   CreateFunc2Args
 	}
 	// Function3 is a function with 3 arguments.
 	Function3 struct {
 		Name string
-		Fn   func(e1, e2, e3 Expression) Expression
+		Fn   CreateFunc3Args
 	}
 	// Function4 is a function with 4 arguments.
 	Function4 struct {
 		Name string
-		Fn   func(e1, e2, e3, e4 Expression) Expression
+		Fn   CreateFunc4Args
 	}
 	// Function5 is a function with 5 arguments.
 	Function5 struct {
 		Name string
-		Fn   func(e1, e2, e3, e4, e5 Expression) Expression
+		Fn   CreateFunc5Args
 	}
 	// Function6 is a function with 6 arguments.
 	Function6 struct {
 		Name string
-		Fn   func(e1, e2, e3, e4, e5, e6 Expression) Expression
+		Fn   CreateFunc6Args
 	}
 	// Function7 is a function with 7 arguments.
 	Function7 struct {
 		Name string
-		Fn   func(e1, e2, e3, e4, e5, e6, e7 Expression) Expression
+		Fn   CreateFunc7Args
 	}
 	// FunctionN is a function with variable number of arguments. This function
 	// is expected to return ErrInvalidArgumentNumber if the arity does not
 	// match, since the check has to be done in the implementation.
 	FunctionN struct {
 		Name string
-		Fn   func(...Expression) (Expression, error)
+		Fn   CreateFuncNArgs
 	}
 )
+
+type EvalLogic func(*Context, Row) (interface{}, error)
+
+func NewFunction0(name string, fn func() Expression) Function0 {
+	return Function0{
+		Name: name,
+		Fn:   fn,
+	}
+}
 
 // Call implements the Function interface.
 func (fn Function0) Call(args ...Expression) (Expression, error) {

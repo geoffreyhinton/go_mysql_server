@@ -1,12 +1,27 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package server
 
 import (
 	"context"
 	"sync"
 
-	"github.com/geoffreyhinton/go_mysql_server/sql"
+	"github.com/dolthub/vitess/go/mysql"
 	"github.com/opentracing/opentracing-go"
-	"vitess.io/vitess/go/mysql"
+
+	"github.com/geoffreyhinton/go_mysql_server/sql"
 )
 
 // SessionBuilder creates sessions given a MySQL connection and a server address.
@@ -72,8 +87,8 @@ func (s *SessionManager) NewSession(ctx context.Context, conn *mysql.Conn) error
 	var err error
 
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.sessions[conn.ConnectionID], s.idxRegs[conn.ConnectionID], s.viewRegs[conn.ConnectionID], err = s.builder(ctx, conn, s.addr)
-	s.mu.Unlock()
 
 	return err
 }

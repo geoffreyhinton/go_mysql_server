@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package function
 
 import (
@@ -12,6 +26,8 @@ type Coalesce struct {
 	args []sql.Expression
 }
 
+var _ sql.FunctionExpression = (*Coalesce)(nil)
+
 // NewCoalesce creates a new Coalesce sql.Expression.
 func NewCoalesce(args ...sql.Expression) (sql.Expression, error) {
 	if len(args) == 0 {
@@ -19,6 +35,11 @@ func NewCoalesce(args ...sql.Expression) (sql.Expression, error) {
 	}
 
 	return &Coalesce{args}, nil
+}
+
+// FunctionName implements sql.FunctionExpression
+func (c *Coalesce) FunctionName() string {
+	return "coalesce"
 }
 
 // Type implements the sql.Expression interface.

@@ -1,8 +1,23 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package plan
 
 import (
-	"github.com/geoffreyhinton/go_mysql_server/sql"
 	errors "gopkg.in/src-d/go-errors.v1"
+
+	"github.com/geoffreyhinton/go_mysql_server/sql"
 )
 
 var errDropViewChild = errors.NewKind("any child of DropView must be of type SingleDropView")
@@ -33,7 +48,7 @@ func (dv *SingleDropView) Resolved() bool {
 }
 
 // RowIter implements the Node interface. It always returns an empty iterator.
-func (dv *SingleDropView) RowIter(ctx *sql.Context) (sql.RowIter, error) {
+func (dv *SingleDropView) RowIter(ctx *sql.Context, row sql.Row) (sql.RowIter, error) {
 	return sql.RowsToRowIter(), nil
 }
 
@@ -107,7 +122,7 @@ func (dvs *DropView) Resolved() bool {
 // RowIter implements the Node interface. When executed, this function drops
 // all the views defined by the node's children. It errors if the flag ifExists
 // is set to false and there is some view that does not exist.
-func (dvs *DropView) RowIter(ctx *sql.Context) (sql.RowIter, error) {
+func (dvs *DropView) RowIter(ctx *sql.Context, row sql.Row) (sql.RowIter, error) {
 	viewList := make([]sql.ViewKey, len(dvs.children))
 	for i, child := range dvs.children {
 		drop, ok := child.(*SingleDropView)
