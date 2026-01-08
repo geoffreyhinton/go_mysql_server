@@ -1,8 +1,20 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package plan
 
 import (
-	"io"
-
 	"github.com/geoffreyhinton/go_mysql_server/sql"
 )
 
@@ -31,36 +43,43 @@ func (p *QueryProcess) WithChildren(children ...sql.Node) (sql.Node, error) {
 }
 
 // RowIter implements the sql.Node interface.
-func (p *QueryProcess) RowIter(ctx *sql.Context) (sql.RowIter, error) {
-	iter, err := p.Child.RowIter(ctx)
+func (p *QueryProcess) RowIter(ctx *sql.Context, row sql.Row) (sql.RowIter, error) {
+	iter, err := p.Child.RowIter(ctx, row)
 	if err != nil {
 		return nil, err
 	}
 
-	return &trackedRowIter{iter: iter, onDone: p.Notify}, nil
+	return &trackedRowIter{node: p.Child, iter: iter, onDone: p.Notify}, nil
 }
 
 func (p *QueryProcess) String() string { return p.Child.String() }
+
+func (p *QueryProcess) DebugString() string {
+	tp := sql.NewTreePrinter()
+	_ = tp.WriteNode("QueryProcess")
+	_ = tp.WriteChildren(sql.DebugString(p.Child))
+	return tp.String()
+}
 
 // ProcessIndexableTable is a wrapper for sql.Tables inside a query process
 // that support indexing.
 // It notifies the process manager about the status of a query when a
 // partition is processed.
 type ProcessIndexableTable struct {
-	sql.IndexableTable
+	sql.DriverIndexableTable
 	OnPartitionDone  NamedNotifyFunc
 	OnPartitionStart NamedNotifyFunc
 	OnRowNext        NamedNotifyFunc
 }
 
 // NewProcessIndexableTable returns a new ProcessIndexableTable.
-func NewProcessIndexableTable(t sql.IndexableTable, onPartitionDone, onPartitionStart, OnRowNext NamedNotifyFunc) *ProcessIndexableTable {
+func NewProcessIndexableTable(t sql.DriverIndexableTable, onPartitionDone, onPartitionStart, OnRowNext NamedNotifyFunc) *ProcessIndexableTable {
 	return &ProcessIndexableTable{t, onPartitionDone, onPartitionStart, OnRowNext}
 }
 
 // Underlying implements sql.TableWrapper interface.
 func (t *ProcessIndexableTable) Underlying() sql.Table {
-	return t.IndexableTable
+	return t.DriverIndexableTable
 }
 
 // IndexKeyValues implements the sql.IndexableTable interface.
@@ -68,7 +87,7 @@ func (t *ProcessIndexableTable) IndexKeyValues(
 	ctx *sql.Context,
 	columns []string,
 ) (sql.PartitionIndexKeyValueIter, error) {
-	iter, err := t.IndexableTable.IndexKeyValues(ctx, columns)
+	iter, err := t.DriverIndexableTable.IndexKeyValues(ctx, columns)
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +97,7 @@ func (t *ProcessIndexableTable) IndexKeyValues(
 
 // PartitionRows implements the sql.Table interface.
 func (t *ProcessIndexableTable) PartitionRows(ctx *sql.Context, p sql.Partition) (sql.RowIter, error) {
-	iter, err := t.IndexableTable.PartitionRows(ctx, p)
+	iter, err := t.DriverIndexableTable.PartitionRows(ctx, p)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +124,7 @@ func (t *ProcessIndexableTable) PartitionRows(ctx *sql.Context, p sql.Partition)
 	return &trackedRowIter{iter: iter, onNext: onNext, onDone: onDone}, nil
 }
 
-var _ sql.IndexableTable = (*ProcessIndexableTable)(nil)
+var _ sql.DriverIndexableTable = (*ProcessIndexableTable)(nil)
 
 // NamedNotifyFunc is a function to notify about some event with a string argument.
 type NamedNotifyFunc func(name string)
@@ -160,6 +179,7 @@ func (t *ProcessTable) PartitionRows(ctx *sql.Context, p sql.Partition) (sql.Row
 }
 
 type trackedRowIter struct {
+	node   sql.Node
 	iter   sql.RowIter
 	onDone NotifyFunc
 	onNext NotifyFunc
@@ -170,14 +190,32 @@ func (i *trackedRowIter) done() {
 		i.onDone()
 		i.onDone = nil
 	}
+	if i.node != nil {
+		i.Dispose()
+		i.node = nil
+	}
+}
+
+func (i *trackedRowIter) Dispose() {
+	if i.node != nil {
+		Inspect(i.node, func(node sql.Node) bool {
+			if d, ok := node.(sql.Disposable); ok {
+				d.Dispose()
+			}
+			return true
+		})
+	}
+	InspectExpressions(i.node, func(e sql.Expression) bool {
+		if d, ok := e.(sql.Disposable); ok {
+			d.Dispose()
+		}
+		return true
+	})
 }
 
 func (i *trackedRowIter) Next() (sql.Row, error) {
 	row, err := i.iter.Next()
 	if err != nil {
-		if err == io.EOF {
-			i.done()
-		}
 		return nil, err
 	}
 
@@ -189,8 +227,9 @@ func (i *trackedRowIter) Next() (sql.Row, error) {
 }
 
 func (i *trackedRowIter) Close() error {
+	err := i.iter.Close()
 	i.done()
-	return i.iter.Close()
+	return err
 }
 
 type trackedPartitionIndexKeyValueIter struct {
@@ -242,19 +281,16 @@ func (i *trackedIndexKeyValueIter) done() {
 }
 
 func (i *trackedIndexKeyValueIter) Close() (err error) {
-	i.done()
 	if i.iter != nil {
 		err = i.iter.Close()
 	}
+	i.done()
 	return err
 }
 
 func (i *trackedIndexKeyValueIter) Next() ([]interface{}, []byte, error) {
 	v, k, err := i.iter.Next()
 	if err != nil {
-		if err == io.EOF {
-			i.done()
-		}
 		return nil, nil, err
 	}
 

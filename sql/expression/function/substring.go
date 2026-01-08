@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package function
 
 import (
@@ -20,6 +34,8 @@ type Substring struct {
 	len   sql.Expression
 }
 
+var _ sql.FunctionExpression = (*Substring)(nil)
+
 // NewSubstring creates a new substring UDF.
 func NewSubstring(args ...sql.Expression) (sql.Expression, error) {
 	var str, start, ln sql.Expression
@@ -36,6 +52,11 @@ func NewSubstring(args ...sql.Expression) (sql.Expression, error) {
 		return nil, sql.ErrInvalidArgumentNumber.New("SUBSTRING", "2 or 3", len(args))
 	}
 	return &Substring{str, start, ln}, nil
+}
+
+// FunctionName implements sql.FunctionExpression
+func (s *Substring) FunctionName() string {
+	return "substring"
 }
 
 // Children implements the Expression interface.
@@ -142,7 +163,7 @@ func (s *Substring) Resolved() bool {
 // Type implements the Expression interface.
 func (*Substring) Type() sql.Type { return sql.LongText }
 
-// / WithChildren implements the Expression interface.
+// WithChildren implements the Expression interface.
 func (*Substring) WithChildren(children ...sql.Expression) (sql.Expression, error) {
 	return NewSubstring(children...)
 }
@@ -157,9 +178,16 @@ type SubstringIndex struct {
 	count sql.Expression
 }
 
+var _ sql.FunctionExpression = (*SubstringIndex)(nil)
+
 // NewSubstringIndex creates a new SubstringIndex UDF.
 func NewSubstringIndex(str, delim, count sql.Expression) sql.Expression {
 	return &SubstringIndex{str, delim, count}
+}
+
+// FunctionName implements sql.FunctionExpression
+func (s *SubstringIndex) FunctionName() string {
+	return "substring_index"
 }
 
 // Children implements the Expression interface.
@@ -264,9 +292,16 @@ type Left struct {
 	len sql.Expression
 }
 
+var _ sql.FunctionExpression = Left{}
+
 // NewLeft creates a new LEFT function.
 func NewLeft(str, len sql.Expression) sql.Expression {
 	return Left{str, len}
+}
+
+// FunctionName implements sql.FunctionExpression
+func (l Left) FunctionName() string {
+	return "left"
 }
 
 // Children implements the Expression interface.
@@ -338,7 +373,7 @@ func (l Left) Resolved() bool {
 // Type implements the Expression interface.
 func (Left) Type() sql.Type { return sql.LongText }
 
-// / WithChildren implements the Expression interface.
+// WithChildren implements the Expression interface.
 func (l Left) WithChildren(children ...sql.Expression) (sql.Expression, error) {
 	if len(children) != 2 {
 		return nil, sql.ErrInvalidChildrenNumber.New(l, len(children), 2)
@@ -351,9 +386,16 @@ type Instr struct {
 	substr sql.Expression
 }
 
+var _ sql.FunctionExpression = Instr{}
+
 // NewInstr creates a new instr UDF.
 func NewInstr(str, substr sql.Expression) sql.Expression {
 	return Instr{str, substr}
+}
+
+// FunctionName implements sql.FunctionExpression
+func (i Instr) FunctionName() string {
+	return "instr"
 }
 
 // Children implements the Expression interface.
@@ -432,7 +474,7 @@ func (i Instr) Resolved() bool {
 // Type implements the Expression interface.
 func (Instr) Type() sql.Type { return sql.Int64 }
 
-// / WithChildren implements the Expression interface.
+// WithChildren implements the Expression interface.
 func (i Instr) WithChildren(children ...sql.Expression) (sql.Expression, error) {
 	if len(children) != 2 {
 		return nil, sql.ErrInvalidChildrenNumber.New(i, len(children), 2)

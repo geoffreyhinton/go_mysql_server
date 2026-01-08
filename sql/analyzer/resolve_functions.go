@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package analyzer
 
 import (
@@ -6,13 +20,12 @@ import (
 	"github.com/geoffreyhinton/go_mysql_server/sql/plan"
 )
 
-func resolveFunctions(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
+// resolveFunctions replaces UnresolvedFunction nodes with equivalent functions from the Catalog.
+func resolveFunctions(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
 	span, _ := ctx.Span("resolve_functions")
 	defer span.Finish()
 
-	a.Log("resolve functions, node of type %T", n)
 	return plan.TransformUp(n, func(n sql.Node) (sql.Node, error) {
-		a.Log("transforming node of type: %T", n)
 		if n.Resolved() {
 			return n, nil
 		}
@@ -23,7 +36,6 @@ func resolveFunctions(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, erro
 
 func resolveFunctionsInExpr(a *Analyzer) sql.TransformExprFunc {
 	return func(e sql.Expression) (sql.Expression, error) {
-		a.Log("transforming expression of type: %T", e)
 		if e.Resolved() {
 			return e, nil
 		}
@@ -45,7 +57,6 @@ func resolveFunctionsInExpr(a *Analyzer) sql.TransformExprFunc {
 		}
 
 		a.Log("resolved function %q", n)
-
 		return rf, nil
 	}
 }

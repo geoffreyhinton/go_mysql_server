@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package plan
 
 import (
@@ -6,8 +20,9 @@ import (
 	"sort"
 	"strings"
 
+	"gopkg.in/src-d/go-errors.v1"
+
 	"github.com/geoffreyhinton/go_mysql_server/sql"
-	errors "gopkg.in/src-d/go-errors.v1"
 )
 
 // ErrUnableSort is thrown when something happens on sorting
@@ -60,6 +75,14 @@ type SortField struct {
 	NullOrdering NullOrdering
 }
 
+func (s SortField) DebugString() string {
+	nullOrdering := "nullsFirst"
+	if s.NullOrdering == NullsLast {
+		nullOrdering = "nullsLast"
+	}
+	return fmt.Sprintf("%s %s %s", sql.DebugString(s.Column), s.Order, nullOrdering)
+}
+
 // NewSort creates a new Sort node.
 func NewSort(sortFields []SortField, child sql.Node) *Sort {
 	return &Sort{
@@ -81,9 +104,9 @@ func (s *Sort) Resolved() bool {
 }
 
 // RowIter implements the Node interface.
-func (s *Sort) RowIter(ctx *sql.Context) (sql.RowIter, error) {
+func (s *Sort) RowIter(ctx *sql.Context, row sql.Row) (sql.RowIter, error) {
 	span, ctx := ctx.Span("plan.Sort")
-	i, err := s.UnaryNode.Child.RowIter(ctx)
+	i, err := s.UnaryNode.Child.RowIter(ctx, row)
 	if err != nil {
 		span.Finish()
 		return nil, err
@@ -99,6 +122,17 @@ func (s *Sort) String() string {
 	}
 	_ = pr.WriteNode("Sort(%s)", strings.Join(fields, ", "))
 	_ = pr.WriteChildren(s.Child.String())
+	return pr.String()
+}
+
+func (s *Sort) DebugString() string {
+	pr := sql.NewTreePrinter()
+	var fields = make([]string, len(s.SortFields))
+	for i, f := range s.SortFields {
+		fields[i] = sql.DebugString(f)
+	}
+	_ = pr.WriteNode("Sort(%s)", strings.Join(fields, ", "))
+	_ = pr.WriteChildren(sql.DebugString(s.Child))
 	return pr.String()
 }
 
@@ -183,6 +217,7 @@ func (i *sortIter) computeSortedRows() error {
 
 	for {
 		row, err := i.childIter.Next()
+
 		if err == io.EOF {
 			break
 		}
@@ -196,53 +231,53 @@ func (i *sortIter) computeSortedRows() error {
 	}
 
 	rows := cache.Get()
-	sorter := &sorter{
-		sortFields: i.s.SortFields,
-		rows:       rows,
-		lastError:  nil,
-		ctx:        i.ctx,
+	sorter := &Sorter{
+		SortFields: i.s.SortFields,
+		Rows:       rows,
+		LastError:  nil,
+		Ctx:        i.ctx,
 	}
 	sort.Stable(sorter)
-	if sorter.lastError != nil {
-		return sorter.lastError
+	if sorter.LastError != nil {
+		return sorter.LastError
 	}
 	i.sortedRows = rows
 	return nil
 }
 
-type sorter struct {
-	sortFields []SortField
-	rows       []sql.Row
-	lastError  error
-	ctx        *sql.Context
+type Sorter struct {
+	SortFields []SortField
+	Rows       []sql.Row
+	LastError  error
+	Ctx        *sql.Context
 }
 
-func (s *sorter) Len() int {
-	return len(s.rows)
+func (s *Sorter) Len() int {
+	return len(s.Rows)
 }
 
-func (s *sorter) Swap(i, j int) {
-	s.rows[i], s.rows[j] = s.rows[j], s.rows[i]
+func (s *Sorter) Swap(i, j int) {
+	s.Rows[i], s.Rows[j] = s.Rows[j], s.Rows[i]
 }
 
-func (s *sorter) Less(i, j int) bool {
-	if s.lastError != nil {
+func (s *Sorter) Less(i, j int) bool {
+	if s.LastError != nil {
 		return false
 	}
 
-	a := s.rows[i]
-	b := s.rows[j]
-	for _, sf := range s.sortFields {
+	a := s.Rows[i]
+	b := s.Rows[j]
+	for _, sf := range s.SortFields {
 		typ := sf.Column.Type()
-		av, err := sf.Column.Eval(s.ctx, a)
+		av, err := sf.Column.Eval(s.Ctx, a)
 		if err != nil {
-			s.lastError = ErrUnableSort.Wrap(err)
+			s.LastError = ErrUnableSort.Wrap(err)
 			return false
 		}
 
-		bv, err := sf.Column.Eval(s.ctx, b)
+		bv, err := sf.Column.Eval(s.Ctx, b)
 		if err != nil {
-			s.lastError = ErrUnableSort.Wrap(err)
+			s.LastError = ErrUnableSort.Wrap(err)
 			return false
 		}
 
@@ -260,7 +295,7 @@ func (s *sorter) Less(i, j int) bool {
 
 		cmp, err := typ.Compare(av, bv)
 		if err != nil {
-			s.lastError = err
+			s.LastError = err
 			return false
 		}
 

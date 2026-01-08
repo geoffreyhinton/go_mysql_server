@@ -1,13 +1,27 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package server
 
 import (
 	"time"
 
-	sqle "github.com/geoffreyhinton/go_mysql_server"
-	"github.com/geoffreyhinton/go_mysql_server/auth"
+	"github.com/dolthub/vitess/go/mysql"
 	"github.com/opentracing/opentracing-go"
 
-	"vitess.io/vitess/go/mysql"
+	sqle "github.com/geoffreyhinton/go_mysql_server"
+	"github.com/geoffreyhinton/go_mysql_server/auth"
 )
 
 // Server is a MySQL server for SQLe engines.
@@ -27,9 +41,14 @@ type Config struct {
 	// Tracer to use in the server. By default, a noop tracer will be used if
 	// no tracer is provided.
 	Tracer opentracing.Tracer
-
-	ConnReadTimeout  time.Duration
+	// Version string to advertise in running server
+	Version string
+	// ConnReadTimeout is the server's read timeout
+	ConnReadTimeout time.Duration
+	// ConnWriteTimeout is the server's write timeout
 	ConnWriteTimeout time.Duration
+	// MaxConnections is the maximum number of simultaneous connections that the server will allow.
+	MaxConnections uint64
 }
 
 // NewDefaultServer creates a Server with the default session builder.
@@ -55,6 +74,10 @@ func NewServer(cfg Config, e *sqle.Engine, sb SessionBuilder) (*Server, error) {
 		cfg.ConnWriteTimeout = 0
 	}
 
+	if cfg.MaxConnections < 0 {
+		cfg.MaxConnections = 0
+	}
+
 	handler := NewHandler(e,
 		NewSessionManager(
 			sb,
@@ -68,9 +91,23 @@ func NewServer(cfg Config, e *sqle.Engine, sb SessionBuilder) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	vtListnr, err := mysql.NewFromListener(l, a, handler, cfg.ConnReadTimeout, cfg.ConnWriteTimeout)
+
+	listenerCfg := mysql.ListenerConfig{
+		Listener:           l,
+		AuthServer:         a,
+		Handler:            handler,
+		ConnReadTimeout:    cfg.ConnReadTimeout,
+		ConnWriteTimeout:   cfg.ConnWriteTimeout,
+		MaxConns:           cfg.MaxConnections,
+		ConnReadBufferSize: mysql.DefaultConnBufferSize,
+	}
+	vtListnr, err := mysql.NewListenerWithConfig(listenerCfg)
 	if err != nil {
 		return nil, err
+	}
+
+	if cfg.Version != "" {
+		vtListnr.ServerVersion = cfg.Version
 	}
 
 	return &Server{Listener: vtListnr, h: handler}, nil

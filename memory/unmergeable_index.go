@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package memory
 
 import (
@@ -13,25 +27,13 @@ import (
 // stores those values to be later retrieved. Only here to test the functionality of indexed queries. This kind of index
 // cannot be merged with any other index.
 type UnmergeableIndex struct {
-	DB         string // required for engine tests with driver
-	DriverName string // required for engine tests with driver
-	Tbl        *Table // required for engine tests with driver
-	TableName  string
-	Exprs      []sql.Expression
+	MergeableIndex
 }
 
 var _ sql.Index = (*UnmergeableIndex)(nil)
-
-func (u *UnmergeableIndex) Database() string { return u.DB }
-func (u *UnmergeableIndex) Driver() string   { return u.DriverName }
-
-func (u *UnmergeableIndex) Expressions() []string {
-	var exprs []string
-	for _, e := range u.Exprs {
-		exprs = append(exprs, e.String())
-	}
-	return exprs
-}
+var _ sql.AscendIndex = (*UnmergeableIndex)(nil)
+var _ sql.DescendIndex = (*UnmergeableIndex)(nil)
+var _ sql.NegateIndex = (*UnmergeableIndex)(nil)
 
 func (u *UnmergeableIndex) Get(key ...interface{}) (sql.IndexLookup, error) {
 	return &UnmergeableIndexLookup{
@@ -47,7 +49,22 @@ type UnmergeableIndexLookup struct {
 	idx *UnmergeableIndex
 }
 
-// dummyIndexValueIter does a very simple and verifiable iteration over the table values for a given index. It does this
+func (u *UnmergeableIndexLookup) IsMergeable(_ sql.IndexLookup) bool {
+	return false
+}
+
+func (u *UnmergeableIndexLookup) Intersection(_ ...sql.IndexLookup) (sql.IndexLookup, error) {
+	panic("not mergeable!")
+}
+
+func (u *UnmergeableIndexLookup) Union(_ ...sql.IndexLookup) (sql.IndexLookup, error) {
+	panic("not mergeable!")
+}
+
+var _ sql.IndexLookup = (*UnmergeableIndexLookup)(nil)
+var _ sql.MergeableIndexLookup = (*UnmergeableIndexLookup)(nil)
+
+// indexValIter does a very simple and verifiable iteration over the table values for a given index. It does this
 // by iterating over all the table rows for a partition and evaluating each of them for inclusion in the index. This is
 // not an efficient way to store an index, and is only suitable for testing the correctness of index code in the engine.
 type indexValIter struct {
@@ -107,6 +124,10 @@ func (u *indexValIter) initValues() error {
 
 func getType(val interface{}) (interface{}, sql.Type) {
 	switch val := val.(type) {
+	case int:
+		return int64(val), sql.Int64
+	case uint:
+		return int64(val), sql.Int64
 	case int8:
 		return int64(val), sql.Int64
 	case uint8:
@@ -129,6 +150,8 @@ func getType(val interface{}) (interface{}, sql.Type) {
 		return float64(val), sql.Float64
 	case string:
 		return val, sql.LongText
+	case nil:
+		return nil, sql.Null
 	default:
 		panic(fmt.Sprintf("Unsupported type for %v of type %T", val, val))
 	}
@@ -141,7 +164,12 @@ func (u *indexValIter) Close() error {
 func (u *UnmergeableIndexLookup) Values(p sql.Partition) (sql.IndexValueIter, error) {
 	var exprs []sql.Expression
 	for exprI, expr := range u.idx.Exprs {
-		exprs = append(exprs, expression.NewEquals(expr, expression.NewLiteral(u.key[exprI], expr.Type())))
+		lit, typ := getType(u.key[exprI])
+		if typ == sql.Null {
+			exprs = append(exprs, expression.NewIsNull(expr))
+		} else {
+			exprs = append(exprs, expression.NewEquals(expr, expression.NewLiteral(lit, typ)))
+		}
 	}
 
 	return &indexValIter{
@@ -163,16 +191,12 @@ func (u *UnmergeableIndex) Has(partition sql.Partition, key ...interface{}) (boo
 	panic("not implemented")
 }
 
-func (u *UnmergeableIndex) ID() string {
-	if len(u.Exprs) == 1 {
-		return u.Exprs[0].String()
+func (u *UnmergeableIndexLookup) String() string {
+	var idxes = make([]string, len(u.key))
+	for i, e := range u.key {
+		idxes[i] = fmt.Sprintf("%s %v", u.idx.Expressions()[i], e)
 	}
-	var parts = make([]string, len(u.Exprs))
-	for i, e := range u.Exprs {
-		parts[i] = e.String()
-	}
-
-	return "(" + strings.Join(parts, ", ") + ")"
+	return strings.Join(idxes, ", ")
 }
 
 func (u *UnmergeableIndex) Table() string {

@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package plan
 
 import "github.com/geoffreyhinton/go_mysql_server/sql"
@@ -16,7 +30,7 @@ func NewNaturalJoin(left, right sql.Node) *NaturalJoin {
 }
 
 // RowIter implements the Node interface.
-func (NaturalJoin) RowIter(*sql.Context) (sql.RowIter, error) {
+func (NaturalJoin) RowIter(*sql.Context, sql.Row) (sql.RowIter, error) {
 	panic("NaturalJoin is a placeholder, RowIter called")
 }
 
@@ -31,7 +45,7 @@ func (NaturalJoin) Resolved() bool { return false }
 func (j NaturalJoin) String() string {
 	pr := sql.NewTreePrinter()
 	_ = pr.WriteNode("NaturalJoin")
-	_ = pr.WriteChildren(j.Left.String(), j.Right.String())
+	_ = pr.WriteChildren(j.left.String(), j.right.String())
 	return pr.String()
 }
 

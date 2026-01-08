@@ -1,7 +1,23 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package sql
 
 import (
+	"fmt"
 	"io"
+	"strings"
 )
 
 // Row is a tuple of values.
@@ -17,6 +33,18 @@ func NewRow(values ...interface{}) Row {
 // Copy creates a new row with the same values as the current one.
 func (r Row) Copy() Row {
 	return NewRow(r...)
+}
+
+// Append appends all the values in r2 to this row and returns the result
+func (r Row) Append(r2 Row) Row {
+	row := make(Row, len(r)+len(r2))
+	for i := range r {
+		row[i] = r[i]
+	}
+	for i := range r2 {
+		row[i+len(r)] = r2[i]
+	}
+	return row
 }
 
 // Equals checks whether two rows are equal given a schema.
@@ -37,6 +65,20 @@ func (r Row) Equals(row Row, schema Schema) (bool, error) {
 	}
 
 	return true, nil
+}
+
+// FormatRow returns a formatted string representing this row's values
+func FormatRow(row Row) string {
+	var sb strings.Builder
+	sb.WriteRune('[')
+	for i, v := range row {
+		if i > 0 {
+			sb.WriteRune(',')
+		}
+		sb.WriteString(fmt.Sprintf("%v", v))
+	}
+	sb.WriteRune(']')
+	return sb.String()
 }
 
 // RowIter is an iterator that produces rows.
@@ -69,7 +111,7 @@ func RowIterToRows(i RowIter) ([]Row, error) {
 
 // NodeToRows converts a node to a slice of rows.
 func NodeToRows(ctx *Context, n Node) ([]Row, error) {
-	i, err := n.RowIter(ctx)
+	i, err := n.RowIter(ctx, nil)
 	if err != nil {
 		return nil, err
 	}

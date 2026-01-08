@@ -1,8 +1,23 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package plan
 
 import (
-	"github.com/geoffreyhinton/go_mysql_server/sql"
 	opentracing "github.com/opentracing/opentracing-go"
+
+	"github.com/geoffreyhinton/go_mysql_server/sql"
 )
 
 // Offset is a node that skips the first N rows.
@@ -25,10 +40,10 @@ func (o *Offset) Resolved() bool {
 }
 
 // RowIter implements the Node interface.
-func (o *Offset) RowIter(ctx *sql.Context) (sql.RowIter, error) {
+func (o *Offset) RowIter(ctx *sql.Context, row sql.Row) (sql.RowIter, error) {
 	span, ctx := ctx.Span("plan.Offset", opentracing.Tag{Key: "offset", Value: o.Offset})
 
-	it, err := o.Child.RowIter(ctx)
+	it, err := o.Child.RowIter(ctx, row)
 	if err != nil {
 		span.Finish()
 		return nil, err

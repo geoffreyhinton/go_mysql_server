@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package analyzer
 
 import (
@@ -6,7 +20,7 @@ import (
 )
 
 // assignCatalog sets the catalog in the required nodes.
-func assignCatalog(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
+func assignCatalog(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
 	span, _ := ctx.Span("assign_catalog")
 	defer span.Finish()
 
@@ -26,18 +40,9 @@ func assignCatalog(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) 
 			nc.Catalog = a.Catalog
 			nc.CurrentDatabase = ctx.GetCurrentDatabase()
 			return &nc, nil
-		case *plan.ShowIndexes:
-			nc := *node
-			nc.Registry = ctx.IndexRegistry
-			return &nc, nil
 		case *plan.ShowDatabases:
 			nc := *node
 			nc.Catalog = a.Catalog
-			return &nc, nil
-		case *plan.ShowCreateTable:
-			nc := *node
-			nc.Catalog = a.Catalog
-			nc.Database = ctx.GetCurrentDatabase()
 			return &nc, nil
 		case *plan.ShowProcessList:
 			nc := *node

@@ -1,26 +1,45 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package expression
 
 import (
 	"fmt"
 
+	"gopkg.in/src-d/go-errors.v1"
+
 	"github.com/geoffreyhinton/go_mysql_server/sql"
-	errors "gopkg.in/src-d/go-errors.v1"
 )
 
 var errCannotSetField = errors.NewKind("Expected GetField expression on left but got %T")
 
-// SetField updates the value of a field from a row.
+// SetField updates the value of a field or a system variable
 type SetField struct {
 	BinaryExpression
 }
 
 // NewSetField creates a new SetField expression.
-func NewSetField(colName, expr sql.Expression) sql.Expression {
-	return &SetField{BinaryExpression{Left: colName, Right: expr}}
+func NewSetField(left, expr sql.Expression) sql.Expression {
+	return &SetField{BinaryExpression{Left: left, Right: expr}}
 }
 
 func (s *SetField) String() string {
-	return fmt.Sprintf("SETFIELD %s = %s", s.Left, s.Right)
+	return fmt.Sprintf("SET %s = %s", s.Left, s.Right)
+}
+
+func (s *SetField) DebugString() string {
+	return fmt.Sprintf("SET %s = %s", sql.DebugString(s.Left), sql.DebugString(s.Right))
 }
 
 // Type implements the Expression interface.
@@ -31,17 +50,11 @@ func (s *SetField) Type() sql.Type {
 // Eval implements the Expression interface.
 // Returns a copy of the given row with an updated value.
 func (s *SetField) Eval(ctx *sql.Context, row sql.Row) (interface{}, error) {
-	// TODO: this janky logic comes from converting GetField exprs rather than Literal exprs
-	var getField *GetField
-	conv, ok := s.Left.(*Convert)
-	if ok {
-		getField, ok = conv.Child.(*GetField)
-	} else {
-		getField, ok = s.Left.(*GetField)
-	}
+	getField, ok := s.Left.(*GetField)
 	if !ok {
 		return nil, errCannotSetField.New(s.Left)
 	}
+
 	if getField.fieldIndex < 0 || getField.fieldIndex >= len(row) {
 		return nil, ErrIndexOutOfBounds.New(getField.fieldIndex, len(row))
 	}

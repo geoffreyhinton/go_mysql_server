@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package expression
 
 import (
@@ -15,6 +29,7 @@ import (
 type Like struct {
 	BinaryExpression
 	pool   *sync.Pool
+	once   sync.Once
 	cached bool
 }
 
@@ -31,6 +46,7 @@ func NewLike(left, right sql.Expression) sql.Expression {
 	return &Like{
 		BinaryExpression: BinaryExpression{left, right},
 		pool:             nil,
+		once:             sync.Once{},
 		cached:           cached,
 	}
 }
@@ -55,39 +71,32 @@ func (l *Like) Eval(ctx *sql.Context, row sql.Row) (interface{}, error) {
 	var (
 		matcher  regex.Matcher
 		disposer regex.Disposer
-		right    string
 	)
-	// eval right and convert to text
-	if !l.cached || l.pool == nil {
-		var v interface{}
-		v, err = l.Right.Eval(ctx, row)
-		if err != nil || v == nil {
-			return nil, err
-		}
-		v, err = sql.LongText.Convert(v)
-		if err != nil {
-			return nil, err
-		}
-		right = patternToGoRegex(v.(string))
-	}
-	// for non-cached regex every time create a new matcher
+
 	if !l.cached {
-		matcher, disposer, err = regex.New("go", right)
+		// for non-cached regex every time create a new matcher
+		right, rerr := l.evalRight(ctx, row)
+		if rerr != nil {
+			return nil, rerr
+		}
+		matcher, disposer, err = regex.New("go", *right)
 	} else {
-		if l.pool == nil {
+		l.once.Do(func() {
+			right, err := l.evalRight(ctx, row)
 			l.pool = &sync.Pool{
 				New: func() interface{} {
-					r, _, e := regex.New(regex.Default(), right)
-					if e != nil {
-						err = e
-						return nil
+					if err != nil || right == nil {
+						return matcherErrTuple{nil, err}
 					}
-					return r
+					r, _, e := regex.New("go", *right)
+					return matcherErrTuple{r, e}
 				},
 			}
-		}
-		matcher = l.pool.Get().(regex.Matcher)
+		})
+		rwe := l.pool.Get().(matcherErrTuple)
+		matcher, err = rwe.matcher, rwe.err
 	}
+
 	if matcher == nil {
 		return nil, err
 	}
@@ -95,12 +104,28 @@ func (l *Like) Eval(ctx *sql.Context, row sql.Row) (interface{}, error) {
 	ok := matcher.Match(left.(string))
 	if !l.cached {
 		disposer.Dispose()
-	} else if l.pool != nil {
-		l.pool.Put(matcher)
+	} else {
+		l.pool.Put(matcherErrTuple{matcher, nil})
 
 	}
 
 	return ok, nil
+}
+
+func (l *Like) evalRight(ctx *sql.Context, row sql.Row) (*string, error) {
+	v, err := l.Right.Eval(ctx, row)
+	if err != nil {
+		return nil, err
+	}
+	if v == nil {
+		return nil, nil
+	}
+	v, err = sql.LongText.Convert(v)
+	if err != nil {
+		return nil, err
+	}
+	s := patternToGoRegex(v.(string))
+	return &s, nil
 }
 
 func (l *Like) String() string {

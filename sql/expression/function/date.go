@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package function
 
 import (
@@ -14,6 +28,8 @@ type DateAdd struct {
 	Interval *expression.Interval
 }
 
+var _ sql.FunctionExpression = (*DateAdd)(nil)
+
 // NewDateAdd creates a new date add function.
 func NewDateAdd(args ...sql.Expression) (sql.Expression, error) {
 	if len(args) != 2 {
@@ -26,6 +42,11 @@ func NewDateAdd(args ...sql.Expression) (sql.Expression, error) {
 	}
 
 	return &DateAdd{args[0], i}, nil
+}
+
+// FunctionName implements sql.FunctionExpression
+func (d *DateAdd) FunctionName() string {
+	return "date_add"
 }
 
 // Children implements the sql.Expression interface.
@@ -89,6 +110,8 @@ type DateSub struct {
 	Interval *expression.Interval
 }
 
+var _ sql.FunctionExpression = (*DateSub)(nil)
+
 // NewDateSub creates a new date add function.
 func NewDateSub(args ...sql.Expression) (sql.Expression, error) {
 	if len(args) != 2 {
@@ -101,6 +124,11 @@ func NewDateSub(args ...sql.Expression) (sql.Expression, error) {
 	}
 
 	return &DateSub{args[0], i}, nil
+}
+
+// FunctionName implements sql.FunctionExpression
+func (d *DateSub) FunctionName() string {
+	return "date_sub"
 }
 
 // Children implements the sql.Expression interface.
@@ -160,8 +188,14 @@ func (d *DateSub) String() string {
 
 // TimestampConversion is a shorthand function for CONVERT(expr, TIMESTAMP)
 type TimestampConversion struct {
-	clock clock
-	Date  sql.Expression
+	Date sql.Expression
+}
+
+var _ sql.FunctionExpression = (*TimestampConversion)(nil)
+
+// FunctionName implements sql.FunctionExpression
+func (t *TimestampConversion) FunctionName() string {
+	return "timestamp"
 }
 
 func (t *TimestampConversion) Resolved() bool {
@@ -169,11 +203,7 @@ func (t *TimestampConversion) Resolved() bool {
 }
 
 func (t *TimestampConversion) String() string {
-	if t.Date != nil {
-		return fmt.Sprintf("TIMESTAMP(%s)", t.Date)
-	} else {
-		return "TIMESTAMP()"
-	}
+	return fmt.Sprintf("TIMESTAMP(%s)", t.Date)
 }
 
 func (t *TimestampConversion) Type() sql.Type {
@@ -185,10 +215,6 @@ func (t *TimestampConversion) IsNullable() bool {
 }
 
 func (t *TimestampConversion) Eval(ctx *sql.Context, r sql.Row) (interface{}, error) {
-	if t.Date == nil {
-		return sql.Timestamp.Convert(t.clock())
-	}
-
 	e, err := t.Date.Eval(ctx, r)
 	if err != nil {
 		return nil, err
@@ -208,19 +234,22 @@ func (t *TimestampConversion) WithChildren(children ...sql.Expression) (sql.Expr
 }
 
 func NewTimestamp(args ...sql.Expression) (sql.Expression, error) {
-	if len(args) > 1 {
+	if len(args) != 1 {
 		return nil, sql.ErrInvalidArgumentNumber.New("TIMESTAMP", 1, len(args))
 	}
-	if len(args) == 0 {
-		return &TimestampConversion{clock: defaultClock}, nil
-	}
-	return &TimestampConversion{defaultClock, args[0]}, nil
+	return &TimestampConversion{args[0]}, nil
 }
 
 // DatetimeConversion is a shorthand function for CONVERT(expr, DATETIME)
 type DatetimeConversion struct {
-	clock clock
-	Date  sql.Expression
+	Date sql.Expression
+}
+
+var _ sql.FunctionExpression = (*DatetimeConversion)(nil)
+
+// FunctionName implements sql.FunctionExpression
+func (t *DatetimeConversion) FunctionName() string {
+	return "datetime"
 }
 
 func (t *DatetimeConversion) Resolved() bool {
@@ -228,11 +257,7 @@ func (t *DatetimeConversion) Resolved() bool {
 }
 
 func (t *DatetimeConversion) String() string {
-	if t.Date != nil {
-		return fmt.Sprintf("DATETIME(%s)", t.Date)
-	} else {
-		return "DATETIME()"
-	}
+	return fmt.Sprintf("DATETIME(%s)", t.Date)
 }
 
 func (t *DatetimeConversion) Type() sql.Type {
@@ -244,10 +269,6 @@ func (t *DatetimeConversion) IsNullable() bool {
 }
 
 func (t *DatetimeConversion) Eval(ctx *sql.Context, r sql.Row) (interface{}, error) {
-	if t.Date == nil {
-		return sql.Datetime.Convert(t.clock())
-	}
-
 	e, err := t.Date.Eval(ctx, r)
 	if err != nil {
 		return nil, err
@@ -266,32 +287,37 @@ func (t *DatetimeConversion) WithChildren(children ...sql.Expression) (sql.Expre
 	return NewDatetime(children...)
 }
 
+// NewDatetime returns a DatetimeConversion instance to handle the sql function "datetime". This is
+// not a standard mysql function, but provides a shorthand for datetime conversions.
 func NewDatetime(args ...sql.Expression) (sql.Expression, error) {
-	if len(args) > 1 {
+	if len(args) != 1 {
 		return nil, sql.ErrInvalidArgumentNumber.New("DATETIME", 1, len(args))
 	}
-	if len(args) == 0 {
-		return &DatetimeConversion{clock: defaultClock}, nil
-	}
-	return &DatetimeConversion{defaultClock, args[0]}, nil
+
+	return &DatetimeConversion{args[0]}, nil
 }
 
-// UnixTimestamp converts the argument to the number of seconds since
-// 1970-01-01 00:00:00 UTC. With no argument, returns number of seconds since
-// unix epoch for the current time.
+// UnixTimestamp converts the argument to the number of seconds since 1970-01-01 00:00:00 UTC.
+// With no argument, returns number of seconds since unix epoch for the current time.
 type UnixTimestamp struct {
-	clock clock
-	Date  sql.Expression
+	Date sql.Expression
 }
+
+var _ sql.FunctionExpression = (*UnixTimestamp)(nil)
 
 func NewUnixTimestamp(args ...sql.Expression) (sql.Expression, error) {
 	if len(args) > 1 {
 		return nil, sql.ErrInvalidArgumentNumber.New("UNIX_TIMESTAMP", 1, len(args))
 	}
 	if len(args) == 0 {
-		return &UnixTimestamp{defaultClock, nil}, nil
+		return &UnixTimestamp{nil}, nil
 	}
-	return &UnixTimestamp{defaultClock, args[0]}, nil
+	return &UnixTimestamp{args[0]}, nil
+}
+
+// FunctionName implements sql.FunctionExpression
+func (ut *UnixTimestamp) FunctionName() string {
+	return "unix_timestamp"
 }
 
 func (ut *UnixTimestamp) Children() []sql.Expression {
@@ -322,7 +348,7 @@ func (ut *UnixTimestamp) WithChildren(children ...sql.Expression) (sql.Expressio
 
 func (ut *UnixTimestamp) Eval(ctx *sql.Context, row sql.Row) (interface{}, error) {
 	if ut.Date == nil {
-		return toUnixTimestamp(ut.clock())
+		return toUnixTimestamp(ctx.QueryTime())
 	}
 
 	date, err := ut.Date.Eval(ctx, row)
@@ -352,4 +378,37 @@ func (ut *UnixTimestamp) String() string {
 	} else {
 		return "UNIX_TIMESTAMP()"
 	}
+}
+
+type CurrDate struct {
+	NoArgFunc
+}
+
+var _ sql.FunctionExpression = CurrDate{}
+
+func NewCurrDate() sql.Expression {
+	return CurrDate{
+		NoArgFunc: NoArgFunc{"curdate", sql.LongText},
+	}
+}
+
+func NewCurrentDate() sql.Expression {
+	return CurrDate{
+		NoArgFunc: NoArgFunc{"current_date", sql.LongText},
+	}
+}
+
+func currDateLogic(ctx *sql.Context, _ sql.Row) (interface{}, error) {
+	t := ctx.QueryTime()
+	return fmt.Sprintf("%d-%02d-%02d", t.Year(), t.Month(), t.Day()), nil
+}
+
+// Eval implements sql.Expression
+func (c CurrDate) Eval(ctx *sql.Context, row sql.Row) (interface{}, error) {
+	return currDateLogic(ctx, row)
+}
+
+// WithChildren implements sql.Expression
+func (c CurrDate) WithChildren(expressions ...sql.Expression) (sql.Expression, error) {
+	return NoArgFuncWithChildren(c, expressions)
 }

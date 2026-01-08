@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package plan
 
 import "github.com/geoffreyhinton/go_mysql_server/sql"
@@ -42,18 +56,26 @@ func (n UnaryNode) Children() []sql.Node {
 
 // BinaryNode is a node with two children.
 type BinaryNode struct {
-	Left  sql.Node
-	Right sql.Node
+	left  sql.Node
+	right sql.Node
+}
+
+func (n BinaryNode) Left() sql.Node {
+	return n.left
+}
+
+func (n BinaryNode) Right() sql.Node {
+	return n.right
 }
 
 // Children implements the Node interface.
 func (n BinaryNode) Children() []sql.Node {
-	return []sql.Node{n.Left, n.Right}
+	return []sql.Node{n.left, n.right}
 }
 
 // Resolved implements the Resolvable interface.
 func (n BinaryNode) Resolved() bool {
-	return n.Left.Resolved() && n.Right.Resolved()
+	return n.left.Resolved() && n.right.Resolved()
 }
 
 func expressionsResolved(exprs ...sql.Expression) bool {

@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package function
 
 import (
@@ -12,6 +26,8 @@ type NullIf struct {
 	expression.BinaryExpression
 }
 
+var _ sql.FunctionExpression = (*NullIf)(nil)
+
 // NewNullIf returns a new NULLIF UDF
 func NewNullIf(ex1, ex2 sql.Expression) sql.Expression {
 	return &NullIf{
@@ -20,6 +36,11 @@ func NewNullIf(ex1, ex2 sql.Expression) sql.Expression {
 			Right: ex2,
 		},
 	}
+}
+
+// FunctionName implements sql.FunctionExpression
+func (f *NullIf) FunctionName() string {
+	return "nullif"
 }
 
 // Eval implements the Expression interface.

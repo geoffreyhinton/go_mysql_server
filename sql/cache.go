@@ -1,20 +1,39 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package sql
 
 import (
 	"fmt"
-	"hash/crc64"
 	"runtime"
+
+	"github.com/cespare/xxhash"
 
 	lru "github.com/hashicorp/golang-lru"
 	errors "gopkg.in/src-d/go-errors.v1"
 )
 
-var table = crc64.MakeTable(crc64.ISO)
-
-// CacheKey returns a hash of the given value to be used as key in
-// a cache.
-func CacheKey(v interface{}) uint64 {
-	return crc64.Checksum([]byte(fmt.Sprintf("%#v", v)), table)
+// HashOf returns a hash of the given value to be used as key in a cache.
+func HashOf(v Row) (uint64, error) {
+	hash := xxhash.New()
+	for _, x := range v {
+		// TODO: probably much faster to do this with a type switch
+		if _, err := hash.Write([]byte(fmt.Sprintf("%#v,", x))); err != nil {
+			return 0, err
+		}
+	}
+	return hash.Sum64(), nil
 }
 
 // ErrKeyNotFound is returned when the key could not be found in the cache.
@@ -25,6 +44,10 @@ type lruCache struct {
 	reporter Reporter
 	size     int
 	cache    *lru.Cache
+}
+
+func (l *lruCache) Size() int {
+	return l.size
 }
 
 func newLRUCache(memory Freeable, r Reporter, size uint) *lruCache {
@@ -83,10 +106,38 @@ func (c *rowsCache) Dispose() {
 	c.rows = nil
 }
 
+// mapCache is a simple in-memory implementation of a cache
+type mapCache struct {
+	cache map[uint64]interface{}
+}
+
+func (m mapCache) Put(u uint64, i interface{}) error {
+	m.cache[u] = i
+	return nil
+}
+
+func (m mapCache) Get(u uint64) (interface{}, error) {
+	return m.cache[u], nil
+}
+
+func (m mapCache) Size() int {
+	return len(m.cache)
+}
+
+func NewMapCache() mapCache {
+	return mapCache{
+		cache: make(map[uint64]interface{}),
+	}
+}
+
 type historyCache struct {
 	memory   Freeable
 	reporter Reporter
 	cache    map[uint64]interface{}
+}
+
+func (h *historyCache) Size() int {
+	return len(h.cache)
 }
 
 func newHistoryCache(memory Freeable, r Reporter) *historyCache {

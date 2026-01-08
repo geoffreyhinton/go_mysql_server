@@ -1,7 +1,26 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package sqle
 
 import (
+	"fmt"
 	"time"
+
+	"github.com/go-kit/kit/metrics/discard"
+	opentracing "github.com/opentracing/opentracing-go"
+	"github.com/sirupsen/logrus"
 
 	"github.com/geoffreyhinton/go_mysql_server/auth"
 	"github.com/geoffreyhinton/go_mysql_server/sql"
@@ -9,9 +28,6 @@ import (
 	"github.com/geoffreyhinton/go_mysql_server/sql/expression/function"
 	"github.com/geoffreyhinton/go_mysql_server/sql/parse"
 	"github.com/geoffreyhinton/go_mysql_server/sql/plan"
-	"github.com/go-kit/kit/metrics/discard"
-	opentracing "github.com/opentracing/opentracing-go"
-	"github.com/sirupsen/logrus"
 )
 
 // Config for the Engine.
@@ -27,6 +43,12 @@ type Engine struct {
 	Catalog  *sql.Catalog
 	Analyzer *analyzer.Analyzer
 	Auth     auth.Auth
+	LS       *sql.LockSubsystem
+}
+
+type ColumnWithRawDefault struct {
+	SqlColumn *sql.Column
+	Default   string
 }
 
 var (
@@ -65,6 +87,8 @@ func New(c *sql.Catalog, a *analyzer.Analyzer, cfg *Config) *Engine {
 		versionPostfix = cfg.VersionPostfix
 	}
 
+	ls := sql.NewLockSubsystem()
+
 	c.MustRegister(
 		sql.FunctionN{
 			Name: "version",
@@ -78,7 +102,9 @@ func New(c *sql.Catalog, a *analyzer.Analyzer, cfg *Config) *Engine {
 			Name: "schema",
 			Fn:   function.NewDatabase(c),
 		})
+
 	c.MustRegister(function.Defaults...)
+	c.MustRegister(function.GetLockingFuncs(ls)...)
 
 	// use auth.None if auth is not specified
 	var au auth.Auth
@@ -88,7 +114,7 @@ func New(c *sql.Catalog, a *analyzer.Analyzer, cfg *Config) *Engine {
 		au = cfg.Auth
 	}
 
-	return &Engine{c, a, au}
+	return &Engine{c, a, au, ls}
 }
 
 // NewDefault creates a new default Engine.
@@ -99,10 +125,36 @@ func NewDefault() *Engine {
 	return New(c, a, nil)
 }
 
+// AnalyzeQuery analyzes a query and returns its Schema.
+func (e *Engine) AnalyzeQuery(
+	ctx *sql.Context,
+	query string,
+) (sql.Schema, error) {
+	parsed, err := parse.Parse(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+
+	analyzed, err := e.Analyzer.Analyze(ctx, parsed, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return analyzed.Schema(), nil
+}
+
 // Query executes a query.
 func (e *Engine) Query(
 	ctx *sql.Context,
 	query string,
+) (sql.Schema, sql.RowIter, error) {
+	return e.QueryWithBindings(ctx, query, nil)
+}
+
+func (e *Engine) QueryWithBindings(
+	ctx *sql.Context,
+	query string,
+	bindings map[string]sql.Expression,
 ) (sql.Schema, sql.RowIter, error) {
 	var (
 		parsed, analyzed sql.Node
@@ -124,7 +176,10 @@ func (e *Engine) Query(
 	case *plan.CreateIndex:
 		typ = sql.CreateIndexProcess
 		perm = auth.ReadPerm | auth.WritePerm
-	case *plan.InsertInto, *plan.DeleteFrom, *plan.Update, *plan.DropIndex, *plan.UnlockTables, *plan.LockTables, *plan.CreateView, *plan.DropView:
+	case *plan.CreateForeignKey, *plan.DropForeignKey, *plan.AlterIndex, *plan.CreateView,
+		*plan.DeleteFrom, *plan.DropIndex, *plan.DropView,
+		*plan.InsertInto, *plan.LockTables, *plan.UnlockTables,
+		*plan.Update:
 		perm = auth.ReadPerm | auth.WritePerm
 	}
 
@@ -144,17 +199,107 @@ func (e *Engine) Query(
 		return nil, nil, err
 	}
 
-	analyzed, err = e.Analyzer.Analyze(ctx, parsed)
+	if len(bindings) > 0 {
+		parsed, err = plan.ApplyBindings(parsed, bindings)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
+	analyzed, err = e.Analyzer.Analyze(ctx, parsed, nil)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	iter, err = analyzed.RowIter(ctx)
+	iter, err = analyzed.RowIter(ctx, nil)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	return analyzed.Schema(), iter, nil
+}
+
+// ParseDefaults takes in a schema, along with each column's default value in a string form, and returns the schema
+// with the default values parsed and resolved.
+func ResolveDefaults(tableName string, schema []*ColumnWithRawDefault) (sql.Schema, error) {
+	ctx := sql.NewEmptyContext()
+	e := NewDefault()
+	db := plan.NewDummyResolvedDB("temporary")
+	unresolvedSchema := make(sql.Schema, len(schema))
+	defaultCount := 0
+	for i, col := range schema {
+		unresolvedSchema[i] = col.SqlColumn
+		if col.Default != "" {
+			var err error
+			unresolvedSchema[i].Default, err = parse.StringToColumnDefaultValue(ctx, col.Default)
+			if err != nil {
+				return nil, err
+			}
+			defaultCount++
+		}
+	}
+	// if all defaults are nil, we can skip the rest of this
+	if defaultCount == 0 {
+		return unresolvedSchema, nil
+	}
+	// *plan.CreateTable properly handles resolving default values, so we hijack it
+	createTable := plan.NewCreateTable(db, tableName, unresolvedSchema, false, nil, nil)
+	analyzed, err := e.Analyzer.Analyze(ctx, createTable, nil)
+	if err != nil {
+		return nil, err
+	}
+	analyzedQueryProcess, ok := analyzed.(*plan.QueryProcess)
+	if !ok {
+		return nil, fmt.Errorf("internal error: unknown analyzed result type `%T`", analyzed)
+	}
+	analyzedCreateTable, ok := analyzedQueryProcess.Child.(*plan.CreateTable)
+	if !ok {
+		return nil, fmt.Errorf("internal error: unknown query process child type `%T`", analyzedQueryProcess)
+	}
+	return analyzedCreateTable.Schema(), nil
+}
+
+// ApplyDefaults applies the default values of the given column indices to the given row, and returns a new row with the updated values.
+// This assumes that the given row has placeholder `nil` values for the default entries, and also that each column in a table is
+// present and in the order as represented by the schema. If no columns are given, then the given row is returned. Column indices should
+// be sorted and in ascending order, however this is not enforced.
+func ApplyDefaults(ctx *sql.Context, tblSch sql.Schema, cols []int, row sql.Row) (sql.Row, error) {
+	if len(cols) == 0 {
+		return row, nil
+	}
+	newRow := row.Copy()
+	if len(tblSch) != len(row) {
+		return nil, fmt.Errorf("any row given to ApplyDefaults must be of the same length as the table it represents")
+	}
+	var secondPass []int
+	for _, col := range cols {
+		if col < 0 || col > len(tblSch) {
+			return nil, fmt.Errorf("column index `%d` is out of bounds, table schema has `%d` number of columns", col, len(tblSch))
+		}
+		if !tblSch[col].Default.IsLiteral() {
+			secondPass = append(secondPass, col)
+			continue
+		}
+		val, err := tblSch[col].Default.Eval(ctx, newRow)
+		if err != nil {
+			return nil, err
+		}
+		newRow[col], err = tblSch[col].Type.Convert(val)
+		if err != nil {
+			return nil, err
+		}
+	}
+	for _, col := range secondPass {
+		val, err := tblSch[col].Default.Eval(ctx, newRow)
+		if err != nil {
+			return nil, err
+		}
+		newRow[col], err = tblSch[col].Type.Convert(val)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return newRow, nil
 }
 
 // Async returns true if the query is async. If there are any errors with the

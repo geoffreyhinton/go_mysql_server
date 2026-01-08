@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package analyzer
 
 import (
@@ -7,7 +21,7 @@ import (
 
 // trackProcess will wrap the query in a process node and add progress items
 // to the already existing process.
-func trackProcess(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
+func trackProcess(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
 	if !n.Resolved() {
 		return n, nil
 	}
@@ -59,7 +73,7 @@ func trackProcess(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
 
 			var t sql.Table
 			switch table := n.Table.(type) {
-			case sql.IndexableTable:
+			case sql.DriverIndexableTable:
 				t = plan.NewProcessIndexableTable(table, onPartitionDone, onPartitionStart, onRowNext)
 			default:
 				t = plan.NewProcessTable(table, onPartitionDone, onPartitionStart, onRowNext)
@@ -80,12 +94,17 @@ func trackProcess(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
 		return n, nil
 	}
 
-	// Remove QueryProcess nodes from the subqueries. Otherwise, the process
-	// will be marked as done as soon as a subquery finishes.
+	// Remove QueryProcess nodes from the subqueries and trigger bodies. Otherwise, the process
+	// will be marked as done as soon as a subquery / trigger finishes.
 	node, err := plan.TransformUp(n, func(n sql.Node) (sql.Node, error) {
 		if sq, ok := n.(*plan.SubqueryAlias); ok {
 			if qp, ok := sq.Child.(*plan.QueryProcess); ok {
 				return sq.WithChildren(qp.Child)
+			}
+		}
+		if t, ok := n.(*plan.TriggerExecutor); ok {
+			if qp, ok := t.Right().(*plan.QueryProcess); ok {
+				return t.WithChildren(t.Left(), qp.Child)
 			}
 		}
 		return n, nil

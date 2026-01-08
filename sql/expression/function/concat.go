@@ -1,17 +1,34 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package function
 
 import (
 	"fmt"
 	"strings"
 
-	"github.com/geoffreyhinton/go_mysql_server/sql"
 	errors "gopkg.in/src-d/go-errors.v1"
+
+	"github.com/geoffreyhinton/go_mysql_server/sql"
 )
 
 // Concat joins several strings together.
 type Concat struct {
 	args []sql.Expression
 }
+
+var _ sql.FunctionExpression = (*Concat)(nil)
 
 // ErrConcatArrayWithOthers is returned when there are more than 1 argument in
 // concat and any of them is an array.
@@ -40,6 +57,11 @@ func NewConcat(args ...sql.Expression) (sql.Expression, error) {
 	}
 
 	return &Concat{args}, nil
+}
+
+// FunctionName implements sql.FunctionExpression
+func (c *Concat) FunctionName() string {
+	return "concat"
 }
 
 // Type implements the Expression interface.

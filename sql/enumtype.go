@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package sql
 
 import (
@@ -5,9 +19,9 @@ import (
 	"strconv"
 	"strings"
 
-	errors "gopkg.in/src-d/go-errors.v1"
-	"vitess.io/vitess/go/sqltypes"
-	"vitess.io/vitess/go/vt/proto/query"
+	"github.com/dolthub/vitess/go/sqltypes"
+	"github.com/dolthub/vitess/go/vt/proto/query"
+	"gopkg.in/src-d/go-errors.v1"
 )
 
 const (
@@ -18,7 +32,10 @@ const (
 	/// An ENUM column can have a maximum of 65,535 distinct elements.
 )
 
-var ErrConvertingToEnum = errors.NewKind("value %v is not valid for this Enum")
+var (
+	ErrConvertingToEnum  = errors.NewKind("value %v is not valid for this Enum")
+	ErrUnmarshallingEnum = errors.NewKind("value %v is not a marshalled value for this Enum")
+)
 
 // Comments with three slashes were taken directly from the linked documentation.
 
@@ -31,7 +48,10 @@ type EnumType interface {
 	Collation() Collation
 	ConvertToIndex(v interface{}) (int, error)
 	IndexOf(v string) int
+	//TODO: move this out of go-mysql-server and into the Dolt layer
+	Marshal(v interface{}) (int64, error)
 	NumberOfElements() uint16
+	Unmarshal(v int64) (string, error)
 	Values() []string
 }
 
@@ -272,9 +292,24 @@ func (t enumType) IndexOf(v string) int {
 	return -1
 }
 
+// Marshal takes a valid Enum value and returns it as an int64.
+func (t enumType) Marshal(v interface{}) (int64, error) {
+	i, err := t.ConvertToIndex(v)
+	return int64(i), err
+}
+
 // NumberOfElements returns the number of enumerations.
 func (t enumType) NumberOfElements() uint16 {
 	return uint16(len(t.indexToVal))
+}
+
+// Unmarshal takes a previously-marshalled value and returns it as a string.
+func (t enumType) Unmarshal(v int64) (string, error) {
+	str, found := t.At(int(v))
+	if !found {
+		return "", ErrUnmarshallingEnum.New(v)
+	}
+	return str, nil
 }
 
 // Values returns the elements, in order, of every enumeration.

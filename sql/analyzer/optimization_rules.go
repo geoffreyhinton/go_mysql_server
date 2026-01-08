@@ -1,21 +1,34 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package analyzer
 
 import (
 	"github.com/geoffreyhinton/go_mysql_server/sql"
 	"github.com/geoffreyhinton/go_mysql_server/sql/expression"
 	"github.com/geoffreyhinton/go_mysql_server/sql/plan"
-	errors "gopkg.in/src-d/go-errors.v1"
 )
 
-func eraseProjection(ctx *sql.Context, a *Analyzer, node sql.Node) (sql.Node, error) {
+// eraseProjection removes redundant Project nodes from the plan. A project is redundant if it doesn't alter the schema
+// of its child.
+func eraseProjection(ctx *sql.Context, a *Analyzer, node sql.Node, scope *Scope) (sql.Node, error) {
 	span, _ := ctx.Span("erase_projection")
 	defer span.Finish()
 
 	if !node.Resolved() {
 		return node, nil
 	}
-
-	a.Log("erase projection, node of type: %T", node)
 
 	return plan.TransformUp(node, func(node sql.Node) (sql.Node, error) {
 		project, ok := node.(*plan.Project)
@@ -28,15 +41,18 @@ func eraseProjection(ctx *sql.Context, a *Analyzer, node sql.Node) (sql.Node, er
 	})
 }
 
-func optimizeDistinct(ctx *sql.Context, a *Analyzer, node sql.Node) (sql.Node, error) {
+// optimizeDistinct substitutes a Distinct node for an OrderedDistinct node when the child of Distinct is already
+// ordered. The OrderedDistinct node is much faster and uses much less memory, since it only has to compare the
+// previous row to the current one to determine its distinct-ness.
+func optimizeDistinct(ctx *sql.Context, a *Analyzer, node sql.Node, scope *Scope) (sql.Node, error) {
 	span, _ := ctx.Span("optimize_distinct")
 	defer span.Finish()
 
-	a.Log("optimize distinct, node of type: %T", node)
 	if n, ok := node.(*plan.Distinct); ok {
 		var sortField *expression.GetField
 		plan.Inspect(n, func(node sql.Node) bool {
-			a.Log("checking for optimization in node of type: %T", node)
+			// TODO: this is a bug. Every column in the output must be sorted in order for OrderedDistinct to produce a
+			//  correct result. This only checks one sort field
 			if sort, ok := node.(*plan.Sort); ok && sortField == nil {
 				if col, ok := sort.SortFields[0].Column.(*expression.GetField); ok {
 					sortField = col
@@ -55,221 +71,101 @@ func optimizeDistinct(ctx *sql.Context, a *Analyzer, node sql.Node) (sql.Node, e
 	return node, nil
 }
 
-var errInvalidNodeType = errors.NewKind("reorder projection: invalid node of type: %T")
-
-func reorderProjection(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
-	span, ctx := ctx.Span("reorder_projection")
-	defer span.Finish()
-
-	if n.Resolved() {
-		return n, nil
-	}
-
-	a.Log("reorder projection, node of type: %T", n)
-
-	// Then we transform the projection
-	return plan.TransformUp(n, func(node sql.Node) (sql.Node, error) {
-		project, ok := node.(*plan.Project)
-		// When we transform the projection, the children will always be
-		// unresolved in the case we want to fix, as the reorder happens just
-		// so some columns can be resolved.
-		// For that, we need to account for NaturalJoin, whose schema can't be
-		// obtained until it's resolved and ignore the projection for the
-		// moment until the resolve_natural_joins has finished resolving the
-		// node and we can tackle it in the next iteration.
-		// Without this check, it would cause a panic, because NaturalJoin's
-		// schema method is just a placeholder that should not be called.
-		if !ok || hasNaturalJoin(project.Child) {
-			return node, nil
-		}
-
-		// We must find all columns that may need to be moved inside the
-		// projection.
-		var newColumns = make(map[string]sql.Expression)
-		for _, col := range project.Projections {
-			alias, ok := col.(*expression.Alias)
-			if ok {
-				newColumns[alias.Name()] = col
-			}
-		}
-
-		// And add projection nodes where needed in the child tree.
-		var didNeedReorder bool
-		child, err := plan.TransformUp(project.Child, func(node sql.Node) (sql.Node, error) {
-			var requiredColumns []string
-			switch node := node.(type) {
-			case *plan.Sort, *plan.Filter:
-				for _, expr := range node.(sql.Expressioner).Expressions() {
-					sql.Inspect(expr, func(e sql.Expression) bool {
-						if e != nil && e.Resolved() {
-							return true
-						}
-
-						uc, ok := e.(column)
-						if ok && uc.Table() == "" {
-							if _, ok := newColumns[uc.Name()]; ok {
-								requiredColumns = append(requiredColumns, uc.Name())
-							}
-						}
-
-						return true
-					})
-				}
-			default:
-				return node, nil
-			}
-
-			if len(requiredColumns) == 0 {
-				return node, nil
-			}
-
-			didNeedReorder = true
-
-			// Only add the required columns for that node in the projection.
-			child := node.Children()[0]
-			schema := child.Schema()
-			var projections = make([]sql.Expression, 0, len(schema)+len(requiredColumns))
-			for i, col := range schema {
-				projections = append(projections, expression.NewGetFieldWithTable(
-					i, col.Type, col.Source, col.Name, col.Nullable,
-				))
-			}
-
-			for _, col := range requiredColumns {
-				if c, ok := newColumns[col]; ok {
-					projections = append(projections, c)
-					delete(newColumns, col)
-				}
-			}
-
-			child = plan.NewProject(projections, child)
-			switch node := node.(type) {
-			case *plan.Filter:
-				return plan.NewFilter(node.Expression, child), nil
-			case *plan.Sort:
-				return plan.NewSort(node.SortFields, child), nil
-			default:
-				return nil, errInvalidNodeType.New(node)
-			}
-		})
-
-		if err != nil {
-			return nil, err
-		}
-
-		if !didNeedReorder {
-			return project, nil
-		}
-
-		child, err = resolveColumns(ctx, a, child)
-		if err != nil {
-			return nil, err
-		}
-
-		childSchema := child.Schema()
-		// Finally, replace the columns we moved with GetFields since they
-		// have already been projected.
-		var projections = make([]sql.Expression, len(project.Projections))
-		for i, p := range project.Projections {
-			if alias, ok := p.(*expression.Alias); ok {
-				var found bool
-				for idx, col := range childSchema {
-					if col.Name == alias.Name() {
-						projections[i] = expression.NewGetField(
-							idx, col.Type, col.Name, col.Nullable,
-						)
-						found = true
-						break
-					}
-				}
-
-				if !found {
-					projections[i] = p
-				}
-			} else {
-				projections[i] = p
-			}
-		}
-
-		return plan.NewProject(projections, child), nil
-	})
-}
-
-func moveJoinConditionsToFilter(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
+// moveJoinConditionsToFilter looks for expressions in a join condition that reference only tables in the left or right
+// side of the join, and move those conditions to a new Filter node instead. If the join condition is empty after these
+// moves, the join is converted to a CrossJoin.
+func moveJoinConditionsToFilter(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
 	if !n.Resolved() {
-		a.Log("node is not resolved, skip moving join conditions to filter")
 		return n, nil
 	}
 
-	a.Log("moving join conditions to filter, node of type: %T", n)
-
-	return plan.TransformUp(n, func(n sql.Node) (sql.Node, error) {
+	var nonJoinFilters []sql.Expression
+	var topJoin sql.Node
+	node, err := plan.TransformUp(n, func(n sql.Node) (sql.Node, error) {
 		join, ok := n.(*plan.InnerJoin)
 		if !ok {
 			return n, nil
 		}
 
-		leftSources := nodeSources(join.Left)
-		rightSources := nodeSources(join.Right)
-		var leftFilters, rightFilters, condFilters []sql.Expression
+		leftSources := nodeSources(join.Left())
+		rightSources := nodeSources(join.Right())
+		filtersMoved := 0
+		var condFilters []sql.Expression
 		for _, e := range splitConjunction(join.Cond) {
 			sources := expressionSources(e)
 
-			canMoveLeft := containsSources(leftSources, sources)
-			if canMoveLeft {
-				leftFilters = append(leftFilters, e)
-			}
+			belongsToLeftTable := containsSources(leftSources, sources)
+			belongsToRightTable := containsSources(rightSources, sources)
 
-			canMoveRight := containsSources(rightSources, sources)
-			if canMoveRight {
-				rightFilters = append(rightFilters, e)
-			}
-
-			if !canMoveLeft && !canMoveRight {
+			if belongsToLeftTable || belongsToRightTable {
+				nonJoinFilters = append(nonJoinFilters, e)
+				filtersMoved++
+			} else {
 				condFilters = append(condFilters, e)
 			}
 		}
 
-		var left, right sql.Node = join.Left, join.Right
-		if len(leftFilters) > 0 {
-			leftFilters, err := fixFieldIndexes(left.Schema(), expression.JoinAnd(leftFilters...))
-			if err != nil {
-				return nil, err
-			}
-
-			left = plan.NewFilter(leftFilters, left)
+		if filtersMoved == 0 {
+			return n, nil
 		}
 
-		if len(rightFilters) > 0 {
-			rightFilters, err := fixFieldIndexes(right.Schema(), expression.JoinAnd(rightFilters...))
-			if err != nil {
-				return nil, err
-			}
-
-			right = plan.NewFilter(rightFilters, right)
-		}
+		left, right := join.Left(), join.Right()
 
 		if len(condFilters) > 0 {
-			return plan.NewInnerJoin(
+			topJoin = plan.NewInnerJoin(
 				left, right,
 				expression.JoinAnd(condFilters...),
-			), nil
+			)
+			return topJoin, nil
 		}
 
 		// if there are no cond filters left we can just convert it to a cross join
-		return plan.NewCrossJoin(left, right), nil
+		topJoin = plan.NewCrossJoin(left, right)
+		return topJoin, nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	if len(nonJoinFilters) == 0 {
+		return node, nil
+	}
+
+	// Add a new filter node with all removed predicates above the top level InnerJoin. Or, if there is a filter node
+	// above that, combine into a new filter.
+	selector := func(parent sql.Node, child sql.Node, childNum int) bool {
+		switch parent.(type) {
+		case *plan.Filter:
+			return false
+		}
+		return parent != topJoin
+	}
+
+	return plan.TransformUpWithSelector(node, selector, func(node sql.Node) (sql.Node, error) {
+		switch node := node.(type) {
+		case *plan.Filter:
+			return plan.NewFilter(
+				expression.JoinAnd(append([]sql.Expression{node.Expression}, nonJoinFilters...)...),
+				node.Child), nil
+		case *plan.InnerJoin, *plan.CrossJoin:
+			return plan.NewFilter(
+				expression.JoinAnd(nonJoinFilters...),
+				node), nil
+		default:
+			return node, nil
+		}
 	})
 }
 
-func removeUnnecessaryConverts(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
+// removeUnnecessaryConverts removes any Convert expressions that don't alter the type of the expression.
+func removeUnnecessaryConverts(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
 	span, _ := ctx.Span("remove_unnecessary_converts")
 	defer span.Finish()
 
 	if !n.Resolved() {
 		return n, nil
 	}
-
-	a.Log("removing unnecessary converts, node of type: %T", n)
 
 	return plan.TransformExpressionsUp(n, func(e sql.Expression) (sql.Expression, error) {
 		if c, ok := e.(*expression.Convert); ok && c.Child.Type() == c.Type() {
@@ -299,6 +195,7 @@ func containsSources(haystack, needle []string) bool {
 	return true
 }
 
+// nodeSources returns the set of column sources from the schema of the node given.
 func nodeSources(node sql.Node) []string {
 	var sources = make(map[string]struct{})
 	var result []string
@@ -313,6 +210,7 @@ func nodeSources(node sql.Node) []string {
 	return result
 }
 
+// expressionSources returns the set of sources from any GetField expressions in the expression given.
 func expressionSources(expr sql.Expression) []string {
 	var sources = make(map[string]struct{})
 	var result []string
@@ -332,12 +230,13 @@ func expressionSources(expr sql.Expression) []string {
 	return result
 }
 
-func evalFilter(ctx *sql.Context, a *Analyzer, node sql.Node) (sql.Node, error) {
+// evalFilter simplifies the expressions in Filter nodes where possible. This involves removing redundant parts of AND
+// and OR expressions, as well as replacing evaluable expressions with their literal result. Filters that can
+// statically be determined to be true or false are replaced with the child node or an empty result, respectively.
+func evalFilter(ctx *sql.Context, a *Analyzer, node sql.Node, scope *Scope) (sql.Node, error) {
 	if !node.Resolved() {
 		return node, nil
 	}
-
-	a.Log("evaluating filters, node of type: %T", node)
 
 	return plan.TransformUp(node, func(node sql.Node) (sql.Node, error) {
 		filter, ok := node.(*plan.Filter)
@@ -438,18 +337,4 @@ func isTrue(e sql.Expression) bool {
 		}
 	}
 	return false
-}
-
-// hasNaturalJoin checks whether there is a natural join at some point in the
-// given node and its children.
-func hasNaturalJoin(node sql.Node) bool {
-	var found bool
-	plan.Inspect(node, func(node sql.Node) bool {
-		if _, ok := node.(*plan.NaturalJoin); ok {
-			found = true
-			return false
-		}
-		return true
-	})
-	return found
 }

@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package sql
 
 import (
@@ -5,12 +19,13 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 	"time"
 
-	errors "gopkg.in/src-d/go-errors.v1"
-	"vitess.io/vitess/go/sqltypes"
-	"vitess.io/vitess/go/vt/proto/query"
-	"vitess.io/vitess/go/vt/sqlparser"
+	"github.com/dolthub/vitess/go/sqltypes"
+	"github.com/dolthub/vitess/go/vt/proto/query"
+	"github.com/dolthub/vitess/go/vt/sqlparser"
+	"gopkg.in/src-d/go-errors.v1"
 )
 
 var (
@@ -97,7 +112,7 @@ func AreComparable(types ...Type) bool {
 
 // ColumnTypeToType gets the column type using the column definition.
 func ColumnTypeToType(ct *sqlparser.ColumnType) (Type, error) {
-	switch ct.Type {
+	switch strings.ToLower(ct.Type) {
 	case "boolean", "bool":
 		return Int8, nil
 	case "tinyint":
@@ -127,7 +142,7 @@ func ColumnTypeToType(ct *sqlparser.ColumnType) (Type, error) {
 		return Int64, nil
 	case "float":
 		return Float32, nil
-	case "double", "real":
+	case "double", "real", "double precision":
 		return Float64, nil
 	case "decimal", "fixed", "dec", "numeric":
 		precision := int64(0)
@@ -191,7 +206,7 @@ func ColumnTypeToType(ct *sqlparser.ColumnType) (Type, error) {
 			return nil, err
 		}
 		return CreateString(sqltypes.Text, length, collation)
-	case "mediumtext", "long":
+	case "mediumtext", "long", "long varchar":
 		collation, err := ParseCollation(&ct.Charset, &ct.Collate, false)
 		if err != nil {
 			return nil, err
@@ -217,7 +232,17 @@ func ColumnTypeToType(ct *sqlparser.ColumnType) (Type, error) {
 			}
 		}
 		return CreateString(sqltypes.Char, length, collation)
-	case "varchar":
+	case "nchar", "national char", "national character":
+		length := int64(1)
+		if ct.Length != nil {
+			var err error
+			length, err = strconv.ParseInt(string(ct.Length.Val), 10, 64)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return CreateString(sqltypes.Char, length, Collation_utf8mb3_general_ci)
+	case "varchar", "character varying":
 		collation, err := ParseCollation(&ct.Charset, &ct.Collate, false)
 		if err != nil {
 			return nil, err
@@ -230,6 +255,15 @@ func ColumnTypeToType(ct *sqlparser.ColumnType) (Type, error) {
 			return nil, err
 		}
 		return CreateString(sqltypes.VarChar, length, collation)
+	case "nvarchar", "national varchar", "national character varying":
+		if ct.Length == nil {
+			return nil, fmt.Errorf("VARCHAR requires a length")
+		}
+		length, err := strconv.ParseInt(string(ct.Length.Val), 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		return CreateString(sqltypes.VarChar, length, Collation_utf8mb3_general_ci)
 	case "binary":
 		length := int64(1)
 		if ct.Length != nil {
@@ -367,6 +401,12 @@ func IsBlob(t Type) bool {
 	}
 }
 
+// IsDecimal checks if t is a DECIMAL type.
+func IsDecimal(t Type) bool {
+	_, ok := t.(decimalType)
+	return ok
+}
+
 // IsFloat checks if t is float type.
 func IsFloat(t Type) bool {
 	return t == Float32 || t == Float64
@@ -385,6 +425,9 @@ func IsNull(ex Expression) bool {
 // IsNumber checks if t is a number type
 func IsNumber(t Type) bool {
 	_, ok := t.(numberTypeImpl)
+	if !ok {
+		_, ok = t.(decimalType)
+	}
 	return ok
 }
 
@@ -397,6 +440,16 @@ func IsSigned(t Type) bool {
 func IsText(t Type) bool {
 	_, ok := t.(stringType)
 	return ok || t == JSON
+}
+
+// IsTextBlob checks if t is one of the TEXTs or BLOBs.
+func IsTextBlob(t Type) bool {
+	switch t.Type() {
+	case sqltypes.Text, sqltypes.Blob:
+		return true
+	default:
+		return false
+	}
 }
 
 // IsTextOnly checks if t is CHAR, VARCHAR, or one of the TEXTs.

@@ -1,13 +1,27 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package sql
 
 import (
 	"fmt"
 	"math/big"
 
+	"github.com/dolthub/vitess/go/sqltypes"
+	"github.com/dolthub/vitess/go/vt/proto/query"
 	"github.com/shopspring/decimal"
-	errors "gopkg.in/src-d/go-errors.v1"
-	"vitess.io/vitess/go/sqltypes"
-	"vitess.io/vitess/go/vt/proto/query"
+	"gopkg.in/src-d/go-errors.v1"
 )
 
 const (
@@ -22,19 +36,22 @@ const (
 var (
 	ErrConvertingToDecimal   = errors.NewKind("value %v is not a valid Decimal")
 	ErrConvertToDecimalLimit = errors.NewKind("value of Decimal is too large for type")
+	ErrMarshalNullDecimal    = errors.NewKind("Decimal cannot marshal a null value")
 )
 
 type DecimalType interface {
 	Type
 	ConvertToDecimal(v interface{}) (decimal.NullDecimal, error)
+	ExclusiveUpperBound() decimal.Decimal
 	MaximumScale() uint8
 	Precision() uint8
 	Scale() uint8
 }
 
 type decimalType struct {
-	precision uint8
-	scale     uint8
+	exclusiveUpperBound decimal.Decimal
+	precision           uint8
+	scale               uint8
 }
 
 // CreateDecimalType creates a DecimalType.
@@ -52,8 +69,9 @@ func CreateDecimalType(precision uint8, scale uint8) (DecimalType, error) {
 		precision = 10
 	}
 	return decimalType{
-		precision: precision,
-		scale:     scale,
+		exclusiveUpperBound: decimal.New(1, int32(precision-scale)),
+		precision:           precision,
+		scale:               scale,
 	}, nil
 }
 
@@ -167,9 +185,7 @@ func (t decimalType) ConvertToDecimal(v interface{}) (decimal.NullDecimal, error
 	}
 
 	res = res.Round(int32(t.scale))
-	// This sets the upper bound for this type. This is computed as 10^(precision - scale).
-	max := decimal.New(1, int32(t.precision-t.scale))
-	if res.Abs().Cmp(max) != -1 {
+	if !res.Abs().LessThan(t.exclusiveUpperBound) {
 		return decimal.NullDecimal{}, ErrConvertToDecimalLimit.New()
 	}
 
@@ -210,6 +226,12 @@ func (t decimalType) String() string {
 // Zero implements Type interface. Returns a uint64 value.
 func (t decimalType) Zero() interface{} {
 	return decimal.NewFromInt(0).StringFixed(int32(t.scale))
+}
+
+// ExclusiveUpperBound returns the exclusive upper bound for this Decimal.
+// For example, DECIMAL(5,2) would return 1000, as 999.99 is the max represented.
+func (t decimalType) ExclusiveUpperBound() decimal.Decimal {
+	return t.exclusiveUpperBound
 }
 
 // MaximumScale returns the maximum scale allowed for the current precision.

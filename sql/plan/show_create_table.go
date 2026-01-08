@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package plan
 
 import (
@@ -5,7 +19,7 @@ import (
 	"io"
 	"strings"
 
-	errors "gopkg.in/src-d/go-errors.v1"
+	"gopkg.in/src-d/go-errors.v1"
 
 	"github.com/geoffreyhinton/go_mysql_server/sql"
 )
@@ -15,17 +29,14 @@ var ErrNotView = errors.NewKind("'%' is not VIEW")
 // ShowCreateTable is a node that shows the CREATE TABLE statement for a table.
 type ShowCreateTable struct {
 	*UnaryNode
-	Catalog  *sql.Catalog
-	Database string
-	IsView   bool
+	IsView  bool
+	Indexes []sql.Index
 }
 
 // NewShowCreateTable creates a new ShowCreateTable node.
-func NewShowCreateTable(db string, ctl *sql.Catalog, table sql.Node, isView bool) sql.Node {
+func NewShowCreateTable(table sql.Node, isView bool) sql.Node {
 	return &ShowCreateTable{
 		UnaryNode: &UnaryNode{table},
-		Database:  db,
-		Catalog:   ctl,
 		IsView:    isView,
 	}
 }
@@ -71,21 +82,16 @@ func (n *ShowCreateTable) Schema() sql.Schema {
 }
 
 // RowIter implements the Node interface
-func (n *ShowCreateTable) RowIter(ctx *sql.Context) (sql.RowIter, error) {
-	db, err := n.Catalog.Database(n.Database)
-	if err != nil {
-		return nil, err
-	}
-
+func (n *ShowCreateTable) RowIter(ctx *sql.Context, row sql.Row) (sql.RowIter, error) {
 	return &showCreateTablesIter{
-		db:     db,
-		ctx:    ctx,
-		table:  n.Child,
-		isView: n.IsView,
+		ctx:     ctx,
+		table:   n.Child,
+		isView:  n.IsView,
+		indexes: n.Indexes,
 	}, nil
 }
 
-// String implements the Stringer interface.
+// String implements the fmt.Stringer interface.
 func (n *ShowCreateTable) String() string {
 	t := "TABLE"
 	if n.IsView {
@@ -101,11 +107,11 @@ func (n *ShowCreateTable) String() string {
 }
 
 type showCreateTablesIter struct {
-	db           sql.Database
 	table        sql.Node
 	didIteration bool
 	isView       bool
 	ctx          *sql.Context
+	indexes      []sql.Index
 }
 
 func (i *showCreateTablesIter) Next() (sql.Row, error) {
@@ -126,7 +132,11 @@ func (i *showCreateTablesIter) Next() (sql.Row, error) {
 		}
 
 		tableName = table.Name()
-		composedCreateTableStatement = produceCreateTableStatement(table)
+		var err error
+		composedCreateTableStatement, err = i.produceCreateTableStatement(table.Table)
+		if err != nil {
+			return nil, err
+		}
 	case *SubqueryAlias:
 		tableName = table.Name()
 		composedCreateTableStatement = produceCreateViewStatement(table)
@@ -145,28 +155,26 @@ type NameAndSchema interface {
 	Schema() sql.Schema
 }
 
-func produceCreateTableStatement(table sql.Table) string {
+func (i *showCreateTablesIter) produceCreateTableStatement(table sql.Table) (string, error) {
 	schema := table.Schema()
 	colStmts := make([]string, len(schema))
 	var primaryKeyCols []string
 
 	// Statement creation parts for each column
+	// TODO: rather than lower-casing here, we should do it in the String() method of types
 	for i, col := range schema {
-		stmt := fmt.Sprintf("  `%s` %s", col.Name, col.Type.String())
+		stmt := fmt.Sprintf("  `%s` %s", col.Name, strings.ToLower(col.Type.String()))
 
 		if !col.Nullable {
 			stmt = fmt.Sprintf("%s NOT NULL", stmt)
 		}
 
-		switch def := col.Default.(type) {
-		case string:
-			if def != "" {
-				stmt = fmt.Sprintf("%s DEFAULT %q", stmt, def)
-			}
-		default:
-			if def != nil {
-				stmt = fmt.Sprintf("%s DEFAULT %v", stmt, col.Default)
-			}
+		if col.AutoIncrement {
+			stmt = fmt.Sprintf("%s AUTO_INCREMENT", stmt)
+		}
+
+		if col.Default != nil {
+			stmt = fmt.Sprintf("%s DEFAULT %s", stmt, col.Default.String())
 		}
 
 		if col.Comment != "" {
@@ -174,22 +182,126 @@ func produceCreateTableStatement(table sql.Table) string {
 		}
 
 		if col.PrimaryKey {
-			primaryKeyCols = append(primaryKeyCols, fmt.Sprintf("`%s`", col.Name))
+			primaryKeyCols = append(primaryKeyCols, col.Name)
 		}
 
 		colStmts[i] = stmt
 	}
 
+	// TODO: the order of the primary key columns might not match their order in the schema. The current interface can't
+	//  represent this. We will need a new sql.Table extension to support this cleanly.
 	if len(primaryKeyCols) > 0 {
-		primaryKey := fmt.Sprintf("  PRIMARY KEY (%s)", strings.Join(primaryKeyCols, ","))
+		primaryKey := fmt.Sprintf("  PRIMARY KEY (%s)", strings.Join(quoteIdentifiers(primaryKeyCols), ","))
 		colStmts = append(colStmts, primaryKey)
+	}
+
+	for _, index := range i.indexes {
+		// The primary key may or may not be declared as an index by the table. Don't print it twice if it's here.
+		if isPrimaryKeyIndex(index, table) {
+			continue
+		}
+
+		var indexCols []string
+		for _, expr := range index.Expressions() {
+			col := GetColumnFromIndexExpr(expr, table)
+			if col != nil {
+				indexCols = append(indexCols, fmt.Sprintf("`%s`", col.Name))
+			}
+		}
+
+		unique := ""
+		if index.IsUnique() {
+			unique = "UNIQUE "
+		}
+
+		key := fmt.Sprintf("  %sKEY `%s` (%s)", unique, index.ID(), strings.Join(indexCols, ","))
+		if index.Comment() != "" {
+			key = fmt.Sprintf("%s COMMENT '%s'", key, index.Comment())
+		}
+
+		colStmts = append(colStmts, key)
+	}
+
+	fkt := getForeignKeyTable(table)
+	if fkt != nil {
+		fks, err := fkt.GetForeignKeys(i.ctx)
+		if err != nil {
+			return "", err
+		}
+		for _, fk := range fks {
+			keyCols := strings.Join(quoteIdentifiers(fk.Columns), ",")
+			refCols := strings.Join(quoteIdentifiers(fk.ReferencedColumns), ",")
+			onDelete := ""
+			if len(fk.OnDelete) > 0 && fk.OnDelete != sql.ForeignKeyReferenceOption_DefaultAction {
+				onDelete = " ON DELETE " + string(fk.OnDelete)
+			}
+			onUpdate := ""
+			if len(fk.OnUpdate) > 0 && fk.OnUpdate != sql.ForeignKeyReferenceOption_DefaultAction {
+				onUpdate = " ON UPDATE " + string(fk.OnUpdate)
+			}
+			colStmts = append(colStmts, fmt.Sprintf("  CONSTRAINT `%s` FOREIGN KEY (%s) REFERENCES `%s` (%s)%s%s", fk.Name, keyCols, fk.ReferencedTable, refCols, onDelete, onUpdate))
+		}
 	}
 
 	return fmt.Sprintf(
 		"CREATE TABLE `%s` (\n%s\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
 		table.Name(),
 		strings.Join(colStmts, ",\n"),
-	)
+	), nil
+}
+
+// getForeignKeyTable returns the underlying ForeignKeyTable for the table given, or nil if it isn't a ForeignKeyTable
+func getForeignKeyTable(t sql.Table) sql.ForeignKeyTable {
+	switch t := t.(type) {
+	case sql.ForeignKeyTable:
+		return t
+	case sql.TableWrapper:
+		return getForeignKeyTable(t.Underlying())
+	default:
+		return nil
+	}
+}
+
+func quoteIdentifiers(ids []string) []string {
+	quoted := make([]string, len(ids))
+	for i, id := range ids {
+		quoted[i] = fmt.Sprintf("`%s`", id)
+	}
+	return quoted
+}
+
+// isPrimaryKeyIndex returns whether the index given matches the table's primary key columns. Order is not considered.
+func isPrimaryKeyIndex(index sql.Index, table sql.Table) bool {
+	var pks []*sql.Column
+
+	for _, col := range table.Schema() {
+		if col.PrimaryKey {
+			pks = append(pks, col)
+		}
+	}
+
+	if len(index.Expressions()) != len(pks) {
+		return false
+	}
+
+	for _, expr := range index.Expressions() {
+		if col := GetColumnFromIndexExpr(expr, table); col != nil {
+			found := false
+			for _, pk := range pks {
+				if col == pk {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return false
+			}
+		} else {
+			return false
+		}
+	}
+
+	return true
 }
 
 func produceCreateViewStatement(view *SubqueryAlias) string {

@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package expression
 
 import (
@@ -8,9 +22,9 @@ import (
 	"time"
 
 	"github.com/spf13/cast"
+	"gopkg.in/src-d/go-errors.v1"
 
 	"github.com/geoffreyhinton/go_mysql_server/sql"
-	errors "gopkg.in/src-d/go-errors.v1"
 )
 
 // ErrConvertExpression is returned when a conversion is not possible.
@@ -54,7 +68,7 @@ type Convert struct {
 func NewConvert(expr sql.Expression, castToType string) *Convert {
 	return &Convert{
 		UnaryExpression: UnaryExpression{Child: expr},
-		castToType:      castToType,
+		castToType:      strings.ToLower(castToType),
 	}
 }
 
@@ -132,7 +146,7 @@ func (c *Convert) Eval(ctx *sql.Context, row sql.Row) (interface{}, error) {
 // convertValue only returns an error if converting to JSON, and returns the zero value for float types.
 // Nil is returned in all other cases.
 func convertValue(val interface{}, castTo string) (interface{}, error) {
-	switch castTo {
+	switch strings.ToLower(castTo) {
 	case ConvertToBinary:
 		b, err := sql.LongBlob.Convert(val)
 		if err != nil {

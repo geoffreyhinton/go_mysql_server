@@ -1,11 +1,26 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package function
 
 import (
 	"fmt"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/geoffreyhinton/go_mysql_server/sql"
 	"github.com/geoffreyhinton/go_mysql_server/sql/expression"
-	"github.com/shopspring/decimal"
 )
 
 // AbsVal is a function that takes the absolute value of a number
@@ -13,9 +28,15 @@ type AbsVal struct {
 	expression.UnaryExpression
 }
 
+var _ sql.FunctionExpression = (*AbsVal)(nil)
+
 // NewAbsVal creates a new AbsVal expression.
 func NewAbsVal(e sql.Expression) sql.Expression {
 	return &AbsVal{expression.UnaryExpression{Child: e}}
+}
+
+func (t *AbsVal) FunctionName() string {
+	return "abs"
 }
 
 // Eval implements the Expression interface.
@@ -83,7 +104,7 @@ func (t *AbsVal) Eval(ctx *sql.Context, row sql.Row) (interface{}, error) {
 	return nil, nil
 }
 
-// String implements the Stringer interface.
+// String implements the fmt.Stringer interface.
 func (t *AbsVal) String() string {
 	return fmt.Sprintf("ABS(%s)", t.Child.String())
 }

@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package function
 
 import (
@@ -13,9 +27,16 @@ type Sqrt struct {
 	expression.UnaryExpression
 }
 
+var _ sql.FunctionExpression = (*Sqrt)(nil)
+
 // NewSqrt creates a new Sqrt expression.
 func NewSqrt(e sql.Expression) sql.Expression {
 	return &Sqrt{expression.UnaryExpression{Child: e}}
+}
+
+// FunctionName implements sql.FunctionExpression
+func (s *Sqrt) FunctionName() string {
+	return "sqrt"
 }
 
 func (s *Sqrt) String() string {
@@ -65,6 +86,8 @@ type Power struct {
 	expression.BinaryExpression
 }
 
+var _ sql.FunctionExpression = (*Power)(nil)
+
 // NewPower creates a new Power expression.
 func NewPower(e1, e2 sql.Expression) sql.Expression {
 	return &Power{
@@ -73,6 +96,11 @@ func NewPower(e1, e2 sql.Expression) sql.Expression {
 			Right: e2,
 		},
 	}
+}
+
+// FunctionName implements sql.FunctionExpression
+func (p *Power) FunctionName() string {
+	return "power"
 }
 
 // Type implements the Expression interface.
@@ -90,7 +118,7 @@ func (p *Power) WithChildren(children ...sql.Expression) (sql.Expression, error)
 	if len(children) != 2 {
 		return nil, sql.ErrInvalidChildrenNumber.New(p, len(children), 2)
 	}
-	return NewPower(children[0], children[0]), nil
+	return NewPower(children[0], children[1]), nil
 }
 
 // Eval implements the Expression interface.

@@ -1,32 +1,46 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package analyzer
 
 import (
 	"strings"
 
+	errors "gopkg.in/src-d/go-errors.v1"
+
 	"github.com/geoffreyhinton/go_mysql_server/sql"
 	"github.com/geoffreyhinton/go_mysql_server/sql/expression"
 	"github.com/geoffreyhinton/go_mysql_server/sql/plan"
-	errors "gopkg.in/src-d/go-errors.v1"
 )
 
-func resolveOrderBy(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
-	span, _ := ctx.Span("resolve_orderby")
+// pushdownSort pushes the Sort node underneath the Project or GroupBy node in the case that columns needed to
+// sort would be projected away before sorting. This can also alter the projection in some cases.
+func pushdownSort(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
+	span, _ := ctx.Span("pushdownSort")
 	defer span.Finish()
 
-	a.Log("resolving order bys, node of type: %T", n)
 	return plan.TransformUp(n, func(n sql.Node) (sql.Node, error) {
-		a.Log("transforming node of type: %T", n)
 		sort, ok := n.(*plan.Sort)
 		if !ok {
 			return n, nil
 		}
 
 		if !sort.Child.Resolved() {
-			a.Log("child of type %T is not resolved yet, skipping", sort.Child)
 			return n, nil
 		}
 
-		childNewCols := columnsDefinedInNode(sort.Child)
+		childAliases := aliasesDefinedInNode(sort.Child)
 		var schemaCols []string
 		for _, col := range sort.Child.Schema() {
 			schemaCols = append(schemaCols, strings.ToLower(col.Name))
@@ -39,7 +53,7 @@ func resolveOrderBy(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error)
 
 			for _, n := range ns {
 				name := strings.ToLower(n.Name())
-				if stringContains(childNewCols, name) {
+				if stringContains(childAliases, name) {
 					colsFromChild = append(colsFromChild, n.Name())
 				} else if !stringContains(schemaCols, name) {
 					missingCols = append(missingCols, n.Name())
@@ -55,7 +69,7 @@ func resolveOrderBy(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error)
 
 		// If there are no columns required by the order by available, then move the order by
 		// below its child.
-		if len(colsFromChild) == 0 && len(missingCols) > 0 {
+		if len(colsFromChild) == 0 {
 			a.Log("pushing down sort, missing columns: %s", strings.Join(missingCols, ", "))
 			return pushSortDown(sort)
 		}
@@ -64,20 +78,21 @@ func resolveOrderBy(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error)
 
 		// If there are some columns required by the order by on the child but some are missing
 		// we have to do some more complex logic and split the projection in two.
-		return fixSortDependencies(sort, missingCols)
+		return reorderSort(sort, missingCols)
 	})
 }
 
-// fixSortDependencies replaces the sort node by a node with the child projection
-// followed by the sort, an intermediate projection or group by with all the missing
-// columns required for the sort and then the child of the child projection or group by.
-func fixSortDependencies(sort *plan.Sort, missingCols []string) (sql.Node, error) {
+// reorderSort replaces the sort node by adding necessary missing columns to the child node and then reordering the
+// sort with its child:
+// sort(project(a)) becomes project(sort(project(a)))
+// sort(groupBy(a)) becomes project(sort(groupby(a)))
+func reorderSort(sort *plan.Sort, missingCols []string) (sql.Node, error) {
 	var expressions []sql.Expression
 	switch child := sort.Child.(type) {
 	case *plan.Project:
 		expressions = child.Projections
 	case *plan.GroupBy:
-		expressions = child.Aggregate
+		expressions = child.SelectedExprs
 	default:
 		return nil, errSortPushdown.New(child)
 	}
@@ -118,34 +133,12 @@ func fixSortDependencies(sort *plan.Sort, missingCols []string) (sql.Node, error
 			expressions,
 			plan.NewSort(
 				sort.SortFields,
-				plan.NewGroupBy(newExpressions, child.Grouping, child.Child),
+				plan.NewGroupBy(newExpressions, child.GroupByExprs, child.Child),
 			),
 		), nil
 	default:
 		return nil, errSortPushdown.New(child)
 	}
-}
-
-// columnsDefinedInNode returns the columns that were defined in this node,
-// which, by definition, can only be plan.Project or plan.GroupBy.
-func columnsDefinedInNode(n sql.Node) []string {
-	var exprs []sql.Expression
-	switch n := n.(type) {
-	case *plan.Project:
-		exprs = n.Projections
-	case *plan.GroupBy:
-		exprs = n.Aggregate
-	}
-
-	var cols []string
-	for _, e := range exprs {
-		alias, ok := e.(*expression.Alias)
-		if ok {
-			cols = append(cols, strings.ToLower(alias.Name()))
-		}
-	}
-
-	return cols
 }
 
 var errSortPushdown = errors.NewKind("unable to push plan.Sort node below %T")
@@ -159,8 +152,8 @@ func pushSortDown(sort *plan.Sort) (sql.Node, error) {
 		), nil
 	case *plan.GroupBy:
 		return plan.NewGroupBy(
-			child.Aggregate,
-			child.Grouping,
+			child.SelectedExprs,
+			child.GroupByExprs,
 			plan.NewSort(sort.SortFields, child.Child),
 		), nil
 	case *plan.ResolvedTable:
@@ -176,15 +169,13 @@ func pushSortDown(sort *plan.Sort) (sql.Node, error) {
 			return child.WithChildren(newChild)
 		}
 
-		// If the child has more than one children we don't know to which side
+		// If the child has more than one child we don't know to which side
 		// the sort must be pushed down.
 		return nil, errSortPushdown.New(child)
 	}
 }
 
-func resolveOrderByLiterals(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
-	a.Log("resolve order by literals")
-
+func resolveOrderByLiterals(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
 	return plan.TransformUp(n, func(n sql.Node) (sql.Node, error) {
 		sort, ok := n.(*plan.Sort)
 		if !ok {
@@ -199,10 +190,10 @@ func resolveOrderByLiterals(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node
 		schema := sort.Child.Schema()
 		var (
 			fields     = make([]plan.SortField, len(sort.SortFields))
-			schemaCols = make([]string, len(schema))
+			schemaCols = make([]*sql.Column, len(schema))
 		)
 		for i, col := range sort.Child.Schema() {
-			schemaCols[i] = col.Name
+			schemaCols[i] = col
 		}
 		for i, f := range sort.SortFields {
 			if lit, ok := f.Column.(*expression.Literal); ok && sql.IsNumber(f.Column.Type()) {
@@ -224,12 +215,12 @@ func resolveOrderByLiterals(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node
 				}
 
 				fields[i] = plan.SortField{
-					Column:       expression.NewUnresolvedColumn(schemaCols[idx]),
+					Column:       expression.NewUnresolvedQualifiedColumn(schemaCols[idx].Source, schemaCols[idx].Name),
 					Order:        f.Order,
 					NullOrdering: f.NullOrdering,
 				}
 
-				a.Log("replaced order by column %d with %s", idx+1, schemaCols[idx])
+				a.Log("replaced order by column %d with %v", idx+1, schemaCols[idx])
 			} else {
 				if agg, ok := f.Column.(sql.Aggregation); ok {
 					name := agg.String()

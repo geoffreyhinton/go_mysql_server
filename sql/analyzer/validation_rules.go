@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package analyzer
 
 import (
@@ -5,11 +19,12 @@ import (
 	"reflect"
 	"strings"
 
+	"gopkg.in/src-d/go-errors.v1"
+
 	"github.com/geoffreyhinton/go_mysql_server/sql"
 	"github.com/geoffreyhinton/go_mysql_server/sql/expression"
 	"github.com/geoffreyhinton/go_mysql_server/sql/expression/function"
 	"github.com/geoffreyhinton/go_mysql_server/sql/plan"
-	errors "gopkg.in/src-d/go-errors.v1"
 )
 
 const (
@@ -62,10 +77,16 @@ var (
 		"using EXPLODE is not supported outside a Project node",
 	)
 
-	// ErrSubqueryColumns is returned when an expression subquery returns
+	// ErrSubqueryMultipleColumns is returned when an expression subquery returns
 	// more than a single column.
-	ErrSubqueryColumns = errors.NewKind(
+	ErrSubqueryMultipleColumns = errors.NewKind(
 		"subquery expressions can only return a single column",
+	)
+
+	// ErrSubqueryFieldIndex is returned when an expression subquery references a field outside the range of the rows it
+	// works on.
+	ErrSubqueryFieldIndex = errors.NewKind(
+		"subquery field index out of range for expression %s: only %d columns available",
 	)
 
 	// ErrUnionSchemasMatch is returned when both sides of a UNION do not
@@ -90,18 +111,47 @@ var DefaultValidationRules = []Rule{
 	{validateUnionSchemasMatchRule, validateUnionSchemasMatch},
 }
 
-func validateIsResolved(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
+func validateIsResolved(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
 	span, _ := ctx.Span("validate_is_resolved")
 	defer span.Finish()
 
 	if !n.Resolved() {
-		return nil, ErrValidationResolved.New(n)
+		return nil, unresolvedError(n)
 	}
 
 	return n, nil
 }
 
-func validateOrderBy(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
+// unresolvedError returns an appropriate error message for the unresolved node given
+func unresolvedError(n sql.Node) error {
+	var err error
+	var walkFn func(sql.Expression) bool
+	walkFn = func(e sql.Expression) bool {
+		switch e := e.(type) {
+		case *plan.Subquery:
+			plan.InspectExpressions(e.Query, walkFn)
+			if err != nil {
+				return false
+			}
+		case *deferredColumn:
+			if e.Table() != "" {
+				err = sql.ErrTableColumnNotFound.New(e.Table(), e.Name())
+			} else {
+				err = sql.ErrColumnNotFound.New(e.Name())
+			}
+			return false
+		}
+		return true
+	}
+	plan.InspectExpressions(n, walkFn)
+
+	if err != nil {
+		return err
+	}
+	return ErrValidationResolved.New(n)
+}
+
+func validateOrderBy(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
 	span, _ := ctx.Span("validate_order_by")
 	defer span.Finish()
 
@@ -118,27 +168,27 @@ func validateOrderBy(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error
 	return n, nil
 }
 
-func validateGroupBy(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
+func validateGroupBy(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
 	span, _ := ctx.Span("validate_group_by")
 	defer span.Finish()
 
 	switch n := n.(type) {
 	case *plan.GroupBy:
 		// Allow the parser use the GroupBy node to eval the aggregation functions
-		// for sql statementes that don't make use of the GROUP BY expression.
-		if len(n.Grouping) == 0 {
+		// for sql statements that don't make use of the GROUP BY expression.
+		if len(n.GroupByExprs) == 0 {
 			return n, nil
 		}
 
 		var validAggs []string
-		for _, expr := range n.Grouping {
+		for _, expr := range n.GroupByExprs {
 			validAggs = append(validAggs, expr.String())
 		}
 
 		// TODO: validate columns inside aggregations
 		// and allow any kind of expression that make use of the grouping
 		// columns.
-		for _, expr := range n.Aggregate {
+		for _, expr := range n.SelectedExprs {
 			if _, ok := expr.(sql.Aggregation); !ok {
 				if !isValidAgg(validAggs, expr) {
 					return nil, ErrValidationGroupBy.New(expr.String())
@@ -163,7 +213,7 @@ func isValidAgg(validAggs []string, expr sql.Expression) bool {
 	}
 }
 
-func validateSchemaSource(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
+func validateSchemaSource(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
 	span, _ := ctx.Span("validate_schema_source")
 	defer span.Finish()
 
@@ -179,7 +229,7 @@ func validateSchemaSource(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, 
 	return n, nil
 }
 
-func validateIndexCreation(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
+func validateIndexCreation(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
 	span, _ := ctx.Span("validate_index_creation")
 	defer span.Finish()
 
@@ -220,15 +270,15 @@ func validateSchema(t *plan.ResolvedTable) error {
 	return nil
 }
 
-func validateUnionSchemasMatch(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
+func validateUnionSchemasMatch(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
 	span, _ := ctx.Span("validate_union_schemas_match")
 	defer span.Finish()
 
 	var firstmismatch []string
 	plan.Inspect(n, func(n sql.Node) bool {
 		if u, ok := n.(*plan.Union); ok {
-			ls := u.Left.Schema()
-			rs := u.Right.Schema()
+			ls := u.Left().Schema()
+			rs := u.Right().Schema()
 			if len(ls) != len(rs) {
 				firstmismatch = []string{
 					fmt.Sprintf("%d columns", len(ls)),
@@ -278,13 +328,13 @@ func findProjectTuples(n sql.Node) (sql.Node, error) {
 	return n, nil
 }
 
-func validateProjectTuples(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
+func validateProjectTuples(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
 	span, _ := ctx.Span("validate_project_tuples")
 	defer span.Finish()
 	return findProjectTuples(n)
 }
 
-func validateCaseResultTypes(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
+func validateCaseResultTypes(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
 	span, ctx := ctx.Span("validate_case_result_types")
 	defer span.Finish()
 
@@ -320,7 +370,7 @@ func validateCaseResultTypes(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Nod
 	return n, nil
 }
 
-func validateIntervalUsage(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
+func validateIntervalUsage(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
 	var invalid bool
 	plan.InspectExpressions(n, func(e sql.Expression) bool {
 		// If it's already invalid just skip everything else.
@@ -349,7 +399,7 @@ func validateIntervalUsage(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node,
 	return n, nil
 }
 
-func validateExplodeUsage(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
+func validateExplodeUsage(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
 	var invalid bool
 	plan.InspectExpressions(n, func(e sql.Expression) bool {
 		// If it's already invalid just skip everything else.
@@ -374,10 +424,12 @@ func validateExplodeUsage(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, 
 	return n, nil
 }
 
-func validateSubqueryColumns(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
+func validateSubqueryColumns(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
+
+	// First validate that every subquery expression returns a single column
 	valid := true
 	plan.InspectExpressions(n, func(e sql.Expression) bool {
-		s, ok := e.(*expression.Subquery)
+		s, ok := e.(*plan.Subquery)
 		if ok && len(s.Query.Schema()) != 1 {
 			valid = false
 			return false
@@ -387,7 +439,35 @@ func validateSubqueryColumns(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Nod
 	})
 
 	if !valid {
-		return nil, ErrSubqueryColumns.New()
+		return nil, ErrSubqueryMultipleColumns.New()
+	}
+
+	// Then validate that every subquery has field indexes within the correct range
+	var outOfRangeIndexExpression sql.Expression
+	var outOfRangeColumns int
+	plan.InspectExpressionsWithNode(n, func(n sql.Node, e sql.Expression) bool {
+		s, ok := e.(*plan.Subquery)
+		if !ok {
+			return true
+		}
+
+		outerScopeRowLen := len(schemas(n.Children()))
+		plan.InspectExpressionsWithNode(s.Query, func(n sql.Node, e sql.Expression) bool {
+			if gf, ok := e.(*expression.GetField); ok {
+				if gf.Index() >= outerScopeRowLen+len(schemas(n.Children())) {
+					outOfRangeIndexExpression = gf
+					outOfRangeColumns = outerScopeRowLen + len(schemas(n.Children()))
+					return false
+				}
+			}
+			return true
+		})
+
+		return outOfRangeIndexExpression == nil
+	})
+
+	if !valid {
+		return nil, ErrSubqueryFieldIndex.New(outOfRangeIndexExpression, outOfRangeColumns)
 	}
 
 	return n, nil

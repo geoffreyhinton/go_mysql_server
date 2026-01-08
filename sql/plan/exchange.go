@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package plan
 
 import (
@@ -6,8 +20,9 @@ import (
 	"io"
 	"sync"
 
-	"github.com/geoffreyhinton/go_mysql_server/sql"
 	errors "gopkg.in/src-d/go-errors.v1"
+
+	"github.com/geoffreyhinton/go_mysql_server/sql"
 )
 
 // ErrNoPartitionable is returned when no Partitionable node is found
@@ -33,7 +48,7 @@ func NewExchange(
 }
 
 // RowIter implements the sql.Node interface.
-func (e *Exchange) RowIter(ctx *sql.Context) (sql.RowIter, error) {
+func (e *Exchange) RowIter(ctx *sql.Context, row sql.Row) (sql.RowIter, error) {
 	var t sql.Table
 	Inspect(e.Child, func(n sql.Node) bool {
 		if table, ok := n.(sql.Table); ok {
@@ -51,13 +66,20 @@ func (e *Exchange) RowIter(ctx *sql.Context) (sql.RowIter, error) {
 		return nil, err
 	}
 
-	return newExchangeRowIter(ctx, e.Parallelism, partitions, e.Child), nil
+	return newExchangeRowIter(ctx, e.Parallelism, partitions, row, e.Child), nil
 }
 
 func (e *Exchange) String() string {
 	p := sql.NewTreePrinter()
 	_ = p.WriteNode("Exchange(parallelism=%d)", e.Parallelism)
 	_ = p.WriteChildren(e.Child.String())
+	return p.String()
+}
+
+func (e *Exchange) DebugString() string {
+	p := sql.NewTreePrinter()
+	_ = p.WriteNode("Exchange(parallelism=%d)", e.Parallelism)
+	_ = p.WriteChildren(sql.DebugString(e.Child))
 	return p.String()
 }
 
@@ -74,6 +96,7 @@ type exchangeRowIter struct {
 	ctx         *sql.Context
 	parallelism int
 	partitions  sql.PartitionIter
+	row         sql.Row
 	tree        sql.Node
 	mut         sync.RWMutex
 	tokensChan  chan struct{}
@@ -89,16 +112,18 @@ func newExchangeRowIter(
 	ctx *sql.Context,
 	parallelism int,
 	iter sql.PartitionIter,
+	row sql.Row,
 	tree sql.Node,
 ) *exchangeRowIter {
 	return &exchangeRowIter{
 		ctx:         ctx,
 		parallelism: parallelism,
-		rows:        make(chan sql.Row, parallelism),
+		rows:        make(chan sql.Row, parallelism*16),
 		err:         make(chan error, 1),
 		started:     false,
 		tree:        tree,
 		partitions:  iter,
+		row:         row,
 		quitChan:    make(chan struct{}),
 	}
 }
@@ -205,6 +230,13 @@ func (it *exchangeRowIter) iterPartitions(ch chan<- sql.Partition) {
 }
 
 func (it *exchangeRowIter) iterPartition(p sql.Partition) {
+	span, ctx := it.ctx.Span("exchange.IterPartition")
+	rowCount := 0
+	defer func() {
+		span.LogKV("num_rows", rowCount)
+		span.Finish()
+	}()
+
 	node, err := TransformUp(it.tree, func(n sql.Node) (sql.Node, error) {
 		if t, ok := n.(sql.Table); ok {
 			return &exchangePartition{p, t}, nil
@@ -217,7 +249,7 @@ func (it *exchangeRowIter) iterPartition(p sql.Partition) {
 		return
 	}
 
-	rows, err := node.RowIter(it.ctx)
+	rows, err := node.RowIter(ctx, it.row)
 	if err != nil {
 		it.err <- err
 		return
@@ -239,7 +271,16 @@ func (it *exchangeRowIter) iterPartition(p sql.Partition) {
 		default:
 		}
 
-		row, err := rows.Next()
+		var row sql.Row
+		var err error
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					err = fmt.Errorf("panic in iterPartition: %v", r)
+				}
+			}()
+			row, err = rows.Next()
+		}()
 		if err != nil {
 			if err == io.EOF {
 				break
@@ -249,6 +290,7 @@ func (it *exchangeRowIter) iterPartition(p sql.Partition) {
 			return
 		}
 
+		rowCount++
 		it.rows <- row
 	}
 }
@@ -307,7 +349,7 @@ func (exchangePartition) Children() []sql.Node { return nil }
 
 func (exchangePartition) Resolved() bool { return true }
 
-func (p *exchangePartition) RowIter(ctx *sql.Context) (sql.RowIter, error) {
+func (p *exchangePartition) RowIter(ctx *sql.Context, row sql.Row) (sql.RowIter, error) {
 	return p.table.PartitionRows(ctx, p.Partition)
 }
 

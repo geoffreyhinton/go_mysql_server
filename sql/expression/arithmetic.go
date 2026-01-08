@@ -1,13 +1,29 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package expression
 
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
-	"github.com/geoffreyhinton/go_mysql_server/sql"
+	"github.com/dolthub/vitess/go/vt/sqlparser"
 	errors "gopkg.in/src-d/go-errors.v1"
-	"vitess.io/vitess/go/vt/sqlparser"
+
+	"github.com/geoffreyhinton/go_mysql_server/sql"
 )
 
 var (
@@ -32,6 +48,11 @@ func NewArithmetic(left, right sql.Expression, op string) *Arithmetic {
 // NewPlus creates a new Arithmetic + sql.Expression.
 func NewPlus(left, right sql.Expression) *Arithmetic {
 	return NewArithmetic(left, right, sqlparser.PlusStr)
+}
+
+func NewIncrement(left sql.Expression) *Arithmetic {
+	one := NewLiteral(sql.NumericUnaryValue(left.Type()), left.Type())
+	return NewArithmetic(left, one, sqlparser.PlusStr)
 }
 
 // NewMinus creates a new Arithmetic - sql.Expression.
@@ -88,6 +109,10 @@ func (a *Arithmetic) String() string {
 	return fmt.Sprintf("%s %s %s", a.Left, a.Op, a.Right)
 }
 
+func (a *Arithmetic) DebugString() string {
+	return fmt.Sprintf("%s %s %s", sql.DebugString(a.Left), a.Op, sql.DebugString(a.Right))
+}
+
 // IsNullable implements the sql.Expression interface.
 func (a *Arithmetic) IsNullable() bool {
 	if a.Type() == sql.Timestamp || a.Type() == sql.Datetime {
@@ -99,7 +124,7 @@ func (a *Arithmetic) IsNullable() bool {
 
 // Type returns the greatest type for given operation.
 func (a *Arithmetic) Type() sql.Type {
-	switch a.Op {
+	switch strings.ToLower(a.Op) {
 	case sqlparser.PlusStr, sqlparser.MinusStr, sqlparser.MultStr, sqlparser.DivStr:
 		if isInterval(a.Left) || isInterval(a.Right) {
 			return sql.Datetime
@@ -160,7 +185,7 @@ func (a *Arithmetic) Eval(ctx *sql.Context, row sql.Row) (interface{}, error) {
 		return nil, err
 	}
 
-	switch a.Op {
+	switch strings.ToLower(a.Op) {
 	case sqlparser.PlusStr:
 		return plus(lval, rval)
 	case sqlparser.MinusStr:
@@ -340,18 +365,27 @@ func div(lval, rval interface{}) (interface{}, error) {
 	case uint64:
 		switch r := rval.(type) {
 		case uint64:
+			if r == 0 {
+				return sql.Null, nil
+			}
 			return l / r, nil
 		}
 
 	case int64:
 		switch r := rval.(type) {
 		case int64:
+			if r == 0 {
+				return sql.Null, nil
+			}
 			return l / r, nil
 		}
 
 	case float64:
 		switch r := rval.(type) {
 		case float64:
+			if r == 0 {
+				return sql.Null, nil
+			}
 			return l / r, nil
 		}
 	}
@@ -442,12 +476,18 @@ func intDiv(lval, rval interface{}) (interface{}, error) {
 	case uint64:
 		switch r := rval.(type) {
 		case uint64:
+			if r == 0 {
+				return sql.Null, nil
+			}
 			return uint64(l / r), nil
 		}
 
 	case int64:
 		switch r := rval.(type) {
 		case int64:
+			if r == 0 {
+				return sql.Null, nil
+			}
 			return int64(l / r), nil
 		}
 	}

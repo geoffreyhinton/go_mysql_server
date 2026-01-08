@@ -1,10 +1,26 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package plan
 
 import (
-	"github.com/opentracing/opentracing-go"
-	"github.com/geoffreyhinton/go_mysql_server/sql"
 	"io"
 	"reflect"
+
+	"github.com/opentracing/opentracing-go"
+
+	"github.com/geoffreyhinton/go_mysql_server/sql"
 )
 
 // An IndexedJoin is a join that uses index lookups for the secondary table.
@@ -15,22 +31,21 @@ type IndexedJoin struct {
 	BinaryNode
 	// The join condition.
 	Cond sql.Expression
-	// The index to use when looking up rows in the secondary table.
-	Index sql.Index
-	// The expression to evaluate to extract a key value from a row in the primary table.
-	primaryTableExpr []sql.Expression
 	// The type of join. Left and right refer to the lexical position in the written query, not primary / secondary. In
 	// the case of a right join, the right table will always be the primary.
 	joinType JoinType
 }
 
-func NewIndexedJoin(primaryTable, indexedTable sql.Node, joinType JoinType, cond sql.Expression, primaryTableExpr []sql.Expression, index sql.Index) *IndexedJoin {
+// JoinType returns the join type for this indexed join
+func (ij *IndexedJoin) JoinType() JoinType {
+	return ij.joinType
+}
+
+func NewIndexedJoin(left, right sql.Node, joinType JoinType, cond sql.Expression) *IndexedJoin {
 	return &IndexedJoin{
-		BinaryNode:       BinaryNode{primaryTable, indexedTable},
-		joinType:         joinType,
-		Cond:             cond,
-		Index:            index,
-		primaryTableExpr: primaryTableExpr,
+		BinaryNode: BinaryNode{left, right},
+		joinType:   joinType,
+		Cond:       cond,
 	}
 }
 
@@ -44,39 +59,47 @@ func (ij *IndexedJoin) String() string {
 		joinType = "Right"
 	}
 	_ = pr.WriteNode("%sIndexedJoin(%s)", joinType, ij.Cond)
-	_ = pr.WriteChildren(ij.Left.String(), ij.Right.String())
+	_ = pr.WriteChildren(ij.left.String(), ij.right.String())
+	return pr.String()
+}
+
+func (ij *IndexedJoin) DebugString() string {
+	pr := sql.NewTreePrinter()
+	joinType := ""
+	switch ij.joinType {
+	case JoinTypeLeft:
+		joinType = "Left"
+	case JoinTypeRight:
+		joinType = "Right"
+	}
+	_ = pr.WriteNode("%sIndexedJoin(%s)", joinType, sql.DebugString(ij.Cond))
+	_ = pr.WriteChildren(sql.DebugString(ij.left), sql.DebugString(ij.right))
 	return pr.String()
 }
 
 func (ij *IndexedJoin) Schema() sql.Schema {
-	return append(ij.Left.Schema(), ij.Right.Schema()...)
+	return append(ij.left.Schema(), ij.right.Schema()...)
 }
 
-func (ij *IndexedJoin) RowIter(ctx *sql.Context) (sql.RowIter, error) {
-	var indexedTable *IndexedTableAccess
-	Inspect(ij.Right, func(node sql.Node) bool {
-		if it, ok := node.(*IndexedTableAccess); ok {
-			indexedTable = it
-			return false
-		}
-		return true
-	})
-
-	if indexedTable == nil {
-		return nil, ErrNoIndexedTableAccess.New(ij.Right)
-	}
-
-	return indexedJoinRowIter(ctx, ij.Left, ij.Right, indexedTable, ij.primaryTableExpr, ij.Cond, ij.Index, ij.joinType)
+func (ij *IndexedJoin) RowIter(ctx *sql.Context, row sql.Row) (sql.RowIter, error) {
+	return indexedJoinRowIter(ctx, row, ij.left, ij.right, ij.Cond, ij.joinType)
 }
 
 func (ij *IndexedJoin) WithChildren(children ...sql.Node) (sql.Node, error) {
 	if len(children) != 2 {
 		return nil, sql.ErrInvalidChildrenNumber.New(ij, len(children), 2)
 	}
-	return NewIndexedJoin(children[0], children[1], ij.joinType, ij.Cond, ij.primaryTableExpr, ij.Index), nil
+	return NewIndexedJoin(children[0], children[1], ij.joinType, ij.Cond), nil
 }
 
-func indexedJoinRowIter(ctx *sql.Context, left sql.Node, right sql.Node, indexAccess *IndexedTableAccess, primaryTableExpr []sql.Expression, cond sql.Expression, index sql.Index, joinType JoinType) (sql.RowIter, error) {
+func indexedJoinRowIter(
+	ctx *sql.Context,
+	parentRow sql.Row,
+	left sql.Node,
+	right sql.Node,
+	cond sql.Expression,
+	joinType JoinType,
+) (sql.RowIter, error) {
 	var leftName, rightName string
 	if leftTable, ok := left.(sql.Nameable); ok {
 		leftName = leftTable.Name()
@@ -95,36 +118,32 @@ func indexedJoinRowIter(ctx *sql.Context, left sql.Node, right sql.Node, indexAc
 		"right": rightName,
 	})
 
-	l, err := left.RowIter(ctx)
+	l, err := left.RowIter(ctx, parentRow)
 	if err != nil {
 		span.Finish()
 		return nil, err
 	}
 	return sql.NewSpanIter(span, &indexedJoinIter{
-		primary:              l,
-		secondaryProvider:    right,
-		secondaryIndexAccess: indexAccess,
-		ctx:                  ctx,
-		cond:                 cond,
-		primaryTableExpr:     primaryTableExpr,
-		index:                index,
-		joinType:             joinType,
-		rowSize:              len(left.Schema()) + len(right.Schema()),
+		parentRow:         parentRow,
+		primary:           l,
+		secondaryProvider: right,
+		ctx:               ctx,
+		cond:              cond,
+		joinType:          joinType,
+		rowSize:           len(parentRow) + len(left.Schema()) + len(right.Schema()),
 	}), nil
 }
 
 // indexedJoinIter is an iterator that iterates over every row in the primary table and performs an index lookup in
 // the secondary table for each value
 type indexedJoinIter struct {
-	primary              sql.RowIter
-	primaryRow           sql.Row
-	index                sql.Index
-	secondaryIndexAccess *IndexedTableAccess
-	secondaryProvider    sql.Node
-	secondary            sql.RowIter
-	primaryTableExpr     []sql.Expression
-	cond                 sql.Expression
-	joinType             JoinType
+	parentRow         sql.Row
+	primary           sql.RowIter
+	primaryRow        sql.Row
+	secondaryProvider sql.Node
+	secondary         sql.RowIter
+	cond              sql.Expression
+	joinType          JoinType
 
 	ctx        *sql.Context
 	foundMatch bool
@@ -138,7 +157,7 @@ func (i *indexedJoinIter) loadPrimary() error {
 			return err
 		}
 
-		i.primaryRow = r
+		i.primaryRow = i.parentRow.Append(r)
 		i.foundMatch = false
 	}
 
@@ -147,34 +166,12 @@ func (i *indexedJoinIter) loadPrimary() error {
 
 func (i *indexedJoinIter) loadSecondary() (sql.Row, error) {
 	if i.secondary == nil {
-		// evaluate the primary row against the primary table expression to get the secondary table lookup key
-		var key []interface{}
-		for _, expr := range i.primaryTableExpr {
-			col, err := expr.Eval(i.ctx, i.primaryRow)
-			if err != nil {
-				return nil, err
-			}
-			key = append(key, col)
-		}
-
-		lookup, err := i.index.Get(key...)
+		rowIter, err := i.secondaryProvider.RowIter(i.ctx, i.primaryRow)
 		if err != nil {
 			return nil, err
 		}
 
-		err = i.secondaryIndexAccess.SetIndexLookup(i.ctx, lookup)
-		if err != nil {
-			return nil, err
-		}
-
-		span, ctx := i.ctx.Span("plan.IndexedJoin indexed lookup")
-		rowIter, err := i.secondaryProvider.RowIter(ctx)
-		if err != nil {
-			span.Finish()
-			return nil, err
-		}
-
-		i.secondary = sql.NewSpanIter(span, rowIter)
+		i.secondary = rowIter
 	}
 
 	secondaryRow, err := i.secondary.Next()
@@ -201,7 +198,8 @@ func (i *indexedJoinIter) Next() (sql.Row, error) {
 		if err != nil {
 			if err == io.EOF {
 				if !i.foundMatch && (i.joinType == JoinTypeLeft || i.joinType == JoinTypeRight) {
-					return i.buildRow(primary, nil), nil
+					row := i.buildRow(primary, nil)
+					return row[len(i.parentRow):], nil
 				}
 				continue
 			}
@@ -219,7 +217,7 @@ func (i *indexedJoinIter) Next() (sql.Row, error) {
 		}
 
 		i.foundMatch = true
-		return row, nil
+		return row[len(i.parentRow):], nil
 	}
 }
 
@@ -260,4 +258,3 @@ func (i *indexedJoinIter) Close() (err error) {
 
 	return err
 }
-

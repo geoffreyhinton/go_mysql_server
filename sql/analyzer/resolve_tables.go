@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package analyzer
 
 import (
@@ -17,13 +31,11 @@ var dualTable = func() sql.Table {
 	return t
 }()
 
-func resolveTables(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
+func resolveTables(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
 	span, _ := ctx.Span("resolve_tables")
 	defer span.Finish()
 
-	a.Log("resolve table, node of type: %T", n)
 	return plan.TransformUp(n, func(n sql.Node) (sql.Node, error) {
-		a.Log("transforming node of type: %T", n)
 		if n.Resolved() {
 			return n, nil
 		}
@@ -48,6 +60,10 @@ func resolveTables(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) 
 				return nil, err
 			}
 
+			if !asOfExpr.Resolved() {
+				return nil, sql.ErrInvalidAsOfExpression.New(asOfExpr.String())
+			}
+
 			asOf, err := asOfExpr.Eval(ctx, nil)
 			if err != nil {
 				return nil, err
@@ -58,6 +74,7 @@ func resolveTables(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) 
 				return handleTableLookupFailure(err, name, db, a, t)
 			}
 
+			a.Log("table resolved: %q as of %s", rt.Name(), asOf)
 			return plan.NewResolvedTable(rt), nil
 		}
 
@@ -66,7 +83,7 @@ func resolveTables(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) 
 			return handleTableLookupFailure(err, name, db, a, t)
 		}
 
-		a.Log("table resolved: %q", t.Name())
+		a.Log("table resolved: %s", t.Name())
 		return plan.NewResolvedTable(rt), nil
 	})
 }
@@ -82,7 +99,7 @@ func handleTableLookupFailure(err error, tableName string, dbName string, a *Ana
 		}
 	} else if sql.ErrTableNotFound.Is(err) {
 		if tableName == dualTableName {
-			a.Log("table resolved: %q", t.Name())
+			a.Log("table resolved: %s", t.Name())
 			return plan.NewResolvedTable(dualTable), nil
 		}
 	}

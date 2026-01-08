@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package function
 
 import (
@@ -5,8 +19,9 @@ import (
 	"reflect"
 	"strings"
 
+	"gopkg.in/src-d/go-errors.v1"
+
 	"github.com/geoffreyhinton/go_mysql_server/sql"
-	errors "gopkg.in/src-d/go-errors.v1"
 )
 
 var ErrDivisionByZero = errors.NewKind("division by zero")
@@ -41,6 +56,19 @@ type Pad struct {
 	length  sql.Expression
 	padStr  sql.Expression
 	padType padType
+}
+
+var _ sql.FunctionExpression = (*Pad)(nil)
+
+// FunctionName implements sql.FunctionExpression
+func (p *Pad) FunctionName() string {
+	if p.padType == lPadType {
+		return "lpad"
+	} else if p.padType == rPadType {
+		return "rpad"
+	} else {
+		panic("unknown name for pad type")
+	}
 }
 
 // Children implements the Expression interface.

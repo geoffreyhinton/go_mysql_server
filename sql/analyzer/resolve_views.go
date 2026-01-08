@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package analyzer
 
 import (
@@ -7,13 +21,11 @@ import (
 	"github.com/geoffreyhinton/go_mysql_server/sql/plan"
 )
 
-func resolveViews(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
+func resolveViews(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
 	span, _ := ctx.Span("resolve_views")
 	defer span.Finish()
 
-	a.Log("resolve views, node of type: %T", n)
 	return plan.TransformUp(n, func(n sql.Node) (sql.Node, error) {
-		a.Log("transforming node of type: %T", n)
 		if n.Resolved() {
 			return n, nil
 		}
@@ -50,7 +62,7 @@ func resolveViews(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
 						}
 
 						if t.AsOf != nil {
-							a.Log("%s", "applying AS OF clause to view "+t2.Name())
+							a.Log("applying AS OF clause to view " + t2.Name())
 							if t2.AsOf != nil {
 								return nil, sql.ErrIncompatibleAsOf.New(
 									fmt.Sprintf("cannot combine AS OF clauses %s and %s",
@@ -60,7 +72,7 @@ func resolveViews(ctx *sql.Context, a *Analyzer, n sql.Node) (sql.Node, error) {
 						}
 
 						if t.Database != "" {
-							a.Log("%s", "applying database clause to view "+t2.Name())
+							a.Log("applying database clause to view " + t2.Name())
 							if t2.Database == "" {
 								t2, _ = t2.WithDatabase(db)
 							}

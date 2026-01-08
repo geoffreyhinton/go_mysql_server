@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package function
 
 import (
@@ -6,8 +20,9 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/src-d/go-errors.v1"
+
 	"github.com/geoffreyhinton/go_mysql_server/sql"
-	errors "gopkg.in/src-d/go-errors.v1"
 )
 
 var ErrUintOverflow = errors.NewKind(
@@ -170,7 +185,7 @@ func compRetType(args ...sql.Expression) (sql.Type, error) {
 }
 
 // Greatest returns the argument with the greatest numerical or string value. It allows for
-// numeric (ints anf floats) and string arguments and will return the used type
+// numeric (ints and floats) and string arguments and will return the used type
 // when all arguments are of the same type or floats if there are numerically
 // convertible strings or integers mixed with floats. When ints or floats
 // are mixed with non numerically convertible strings, those are ignored.
@@ -178,6 +193,8 @@ type Greatest struct {
 	Args       []sql.Expression
 	returnType sql.Type
 }
+
+var _ sql.FunctionExpression = (*Greatest)(nil)
 
 // ErrUnsupportedType is returned when an argument to Greatest or Latest is not numeric or string
 var ErrUnsupportedType = errors.NewKind("unsupported type for greatest/least argument: %T")
@@ -190,6 +207,11 @@ func NewGreatest(args ...sql.Expression) (sql.Expression, error) {
 	}
 
 	return &Greatest{args, retType}, nil
+}
+
+// FunctionName implements sql.FunctionExpression
+func (f *Greatest) FunctionName() string {
+	return "greatest"
 }
 
 // Type implements the Expression interface.
@@ -276,6 +298,8 @@ type Least struct {
 	returnType sql.Type
 }
 
+var _ sql.FunctionExpression = (*Least)(nil)
+
 // NewLeast creates a new Least UDF
 func NewLeast(args ...sql.Expression) (sql.Expression, error) {
 	retType, err := compRetType(args...)
@@ -284,6 +308,11 @@ func NewLeast(args ...sql.Expression) (sql.Expression, error) {
 	}
 
 	return &Least{args, retType}, nil
+}
+
+// FunctionName implements sql.FunctionExpression
+func (f *Least) FunctionName() string {
+	return "least"
 }
 
 // Type implements the Expression interface.

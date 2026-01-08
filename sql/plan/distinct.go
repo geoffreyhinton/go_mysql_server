@@ -1,3 +1,17 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package plan
 
 import (
@@ -24,10 +38,10 @@ func (d *Distinct) Resolved() bool {
 }
 
 // RowIter implements the Node interface.
-func (d *Distinct) RowIter(ctx *sql.Context) (sql.RowIter, error) {
+func (d *Distinct) RowIter(ctx *sql.Context, row sql.Row) (sql.RowIter, error) {
 	span, ctx := ctx.Span("plan.Distinct")
 
-	it, err := d.Child.RowIter(ctx)
+	it, err := d.Child.RowIter(ctx, row)
 	if err != nil {
 		span.Finish()
 		return nil, err
@@ -49,6 +63,13 @@ func (d Distinct) String() string {
 	p := sql.NewTreePrinter()
 	_ = p.WriteNode("Distinct")
 	_ = p.WriteChildren(d.Child.String())
+	return p.String()
+}
+
+func (d Distinct) DebugString() string {
+	p := sql.NewTreePrinter()
+	_ = p.WriteNode("Distinct")
+	_ = p.WriteChildren(sql.DebugString(d.Child))
 	return p.String()
 }
 
@@ -82,7 +103,11 @@ func (di *distinctIter) Next() (sql.Row, error) {
 			return nil, err
 		}
 
-		hash := sql.CacheKey(row)
+		hash, err := sql.HashOf(row)
+		if err != nil {
+			return nil, err
+		}
+
 		if _, err := di.seen.Get(hash); err == nil {
 			continue
 		}
@@ -125,10 +150,10 @@ func (d *OrderedDistinct) Resolved() bool {
 }
 
 // RowIter implements the Node interface.
-func (d *OrderedDistinct) RowIter(ctx *sql.Context) (sql.RowIter, error) {
+func (d *OrderedDistinct) RowIter(ctx *sql.Context, row sql.Row) (sql.RowIter, error) {
 	span, ctx := ctx.Span("plan.OrderedDistinct")
 
-	it, err := d.Child.RowIter(ctx)
+	it, err := d.Child.RowIter(ctx, nil)
 	if err != nil {
 		span.Finish()
 		return nil, err

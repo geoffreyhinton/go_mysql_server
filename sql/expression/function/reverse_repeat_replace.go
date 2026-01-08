@@ -1,12 +1,27 @@
+// Copyright 2020-2021 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package function
 
 import (
 	"fmt"
 	"strings"
 
+	"gopkg.in/src-d/go-errors.v1"
+
 	"github.com/geoffreyhinton/go_mysql_server/sql"
 	"github.com/geoffreyhinton/go_mysql_server/sql/expression"
-	errors "gopkg.in/src-d/go-errors.v1"
 )
 
 // Reverse is a function that returns the reverse of the text provided.
@@ -14,9 +29,16 @@ type Reverse struct {
 	expression.UnaryExpression
 }
 
+var _ sql.FunctionExpression = (*Reverse)(nil)
+
 // NewReverse creates a new Reverse expression.
 func NewReverse(e sql.Expression) sql.Expression {
 	return &Reverse{expression.UnaryExpression{Child: e}}
+}
+
+// FunctionName implements sql.FunctionExpression
+func (r *Reverse) FunctionName() string {
+	return "reverse"
 }
 
 // Eval implements the Expression interface.
@@ -69,9 +91,16 @@ type Repeat struct {
 	expression.BinaryExpression
 }
 
+var _ sql.FunctionExpression = (*Repeat)(nil)
+
 // NewRepeat creates a new Repeat expression.
 func NewRepeat(str sql.Expression, count sql.Expression) sql.Expression {
 	return &Repeat{expression.BinaryExpression{Left: str, Right: count}}
+}
+
+// FunctionName implements sql.FunctionExpression
+func (r *Repeat) FunctionName() string {
+	return "repeat"
 }
 
 func (r *Repeat) String() string {
@@ -129,9 +158,16 @@ type Replace struct {
 	toStr   sql.Expression
 }
 
+var _ sql.FunctionExpression = (*Replace)(nil)
+
 // NewReplace creates a new Replace expression.
 func NewReplace(str sql.Expression, fromStr sql.Expression, toStr sql.Expression) sql.Expression {
 	return &Replace{str, fromStr, toStr}
+}
+
+// FunctionName implements sql.FunctionExpression
+func (r *Replace) FunctionName() string {
+	return "replace"
 }
 
 // Children implements the Expression interface.
